@@ -1,0 +1,17 @@
+{
+  "name": "trading",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Simple ICT/SMC day-trading scaffold with Yahoo Finance data and a toy backtester (JS only)",
+  "scripts": {
+    "backtest": "node src/index.js backtest",
+    "live": "node src/index.js live"
+  },
+  "dependencies": {
+    "yahoo-finance2": "^2.13.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

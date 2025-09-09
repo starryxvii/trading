@@ -1,0 +1,117 @@
+{
+  "strategy": "ultra",
+  "symbol": "BTC-USD",
+  "interval": "5m",
+  "period": "60d",
+
+  "equity": 10000,
+  "riskPct": 0.75,
+  "rr": 2.0,
+
+  "session": "AUTO",
+  "debug": false,
+  "report": { "exportCsv": true },
+  "maxConcurrentTrades": 1,
+  "pollMs": 15000,
+
+  "slippageBps": 1,
+  "feeBps": 0,
+
+  "scaleOutAtR": 0,
+  "scaleOutFrac": 0.00,
+  "finalTP_R": 3.2,
+
+  "maxDailyLossPct": 1.5,
+
+  "atrTrailMult": 0.0,
+  "atrTrailPeriod": 14,
+
+  "mfeTrail": { "enabled": true, "armR": 1.6, "givebackR": 0.35 },
+
+  "pyramiding": { "enabled": false },
+
+  "volScale": { "enabled": true, "atrPeriod": 14, "cutIfAtrX": 1.25, "cutFrac": 0.40, "noCutAboveR": 1.6 },
+
+  "oco": { "mode": "intrabar", "tieBreak": "optimistic", "clampStops": true, "clampEpsBps": 0.5 },
+  "triggerMode": "intrabar",
+  "flattenAtClose": false,
+  "position": { "qtyStep": 0.001, "minQty": 0.001, "maxLeverage": 2.0 },
+
+  "ultra": {
+    "preset": "tight",
+    "log": { "enabled": true, "level": "debug", "json": true },
+    "debug": true,
+
+    "useSessionWindows": false,           
+    "firstMinGuard": 1,
+    "lastMinGuard": 1,
+
+    "lookback": 250,
+    "imbalanceLookback": 30,
+    "sweepTolBps": 2.0,
+
+    "minAtrBps": 3,                     
+    "preferIFVG": true,
+
+    "requireMicroBOS": false,             
+    "requireSweep": true,
+
+    "usePD": true,                        
+    "pdToleranceBps": 30,                
+    "useOTE": true,
+    "oteLo": 0.58,
+    "oteHi": 0.79,
+
+    "bias": {
+      "enabled": true,
+      "gate": "strict",
+      "emaPeriod": 50,
+      "slopeBps": 1,
+      "htf4h": 240,
+      "htf1h": 60,
+      "fallback15m": 15,
+      "bandBps": 8
+    },
+
+    "allowStrongSetupOverNeutralBias": true,
+
+    "confluence": {
+      "minScore": 3,                  
+      "sweepPts": 1,
+      "imbPts": 1,
+      "bosPts": 0,
+      "pdPts": 0,
+      "otePts": 1,
+      "htfPts": 1
+    },
+
+    "entryMode": "ce",                     
+    "entryExpiryBars": 8,
+
+    "rr": 2.0,
+    "atrPeriod": 14,
+    "atrMult": 1.2,
+    "minStopBps": 8,
+    "breakevenAtR": 1.2,
+    "trailAfterR": 1.8,
+    "cooldownBars": 8,
+
+    "fvgMinBps": 3.0,                 
+    "minBodyAtr": 0.35                
+  },
+
+  "broker": {
+    "maxHoldMinLive": 360,
+    "flattenWeekends": true,
+    "flattenFridayHourUTC": 21
+  },
+
+  "backtest": {
+    "maxHoldMin": 360,
+    "flattenWeekends": true,
+    "flattenFridayHourUTC": 21,
+    "dailyMaxTrades": 3,
+    "postLossCooldownBars": 10,
+    "entryChase": { "enabled": true, "afterBars": 2, "maxSlipR": 0.12, "convertOnExpiry": true }
+  }
+}
