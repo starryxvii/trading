@@ -47,4 +47,3 @@ export function detectSweep(bars,i,{ asian, prevDay, tolBps=2, swingFallbackLook
   if(pl && sweptBelowN(pl.price,bars,i,nBars,tolBps)) return { side:'long',  ref:pl.price, kind:'swingLo' };
   return null;
 }
-

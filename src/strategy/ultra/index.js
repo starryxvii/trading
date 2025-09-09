@@ -166,7 +166,9 @@ export function ultraSignalFactory(opts = {}) {
     const bodyAtr = body / Math.max(1e-12, curATR);
     const imbSize = Math.abs(imb.top - imb.bottom);
     const imbBps  = relBps(imbSize, price);
-    if (imbBps < _fvgMinBps || bodyAtr < _minBodyAtr) {
+    const fvgAtr = imbSize / Math.max(1e-12, curATR);
+    const needFvgAtr = 0.9; // start at 0.9–1.1, tunable via opts
+    if (imbBps < _fvgMinBps || bodyAtr < _minBodyAtr || fvgAtr < needFvgAtr) {
       rej('fvgTooSmall'); logger.debug?.({ ...baseCtx, evt: 'reject', reason: 'fvgTooSmall', imbBps, bodyAtr, needBps: _fvgMinBps, needBodyAtr: _minBodyAtr });
       return null;
     }
@@ -174,7 +176,7 @@ export function ultraSignalFactory(opts = {}) {
     // micro BOS (optional/strictness controlled by requireMicroBOS boolean)
     if (_requireMicroBOS) {
       const dir = sw.side === 'long' ? 'up' : 'down';
-      if (!microBOS(bars, i, dir, 20)) { rej('microBosFail'); logger.debug?.({ ...baseCtx, evt: 'reject', reason: 'microBosFail' }); return null; }
+      if (!microBOS(bars, i, dir, 20, 'wick')) { rej('microBosFail'); logger.debug?.({ ...baseCtx, evt: 'reject', reason: 'microBosFail' }); return null; }
     }
 
     // PD array — NEW tolerance & mid check
@@ -234,15 +236,15 @@ export function ultraSignalFactory(opts = {}) {
     const atrPad = atrMult * curATR;
 
     let stop;
-    if (sw.side === 'long') {
-      const sweepExtreme = Math.min(bars[i].low, imb.bottom);
-      stop = Math.min(sweepExtreme, entry - minStopAbs, entry - atrPad);
-      if (stop >= entry) stop = entry - Math.max(minStopAbs, atrPad, 1e-8);
-    } else {
-      const sweepExtreme = Math.max(bars[i].high, imb.top);
-      stop = Math.max(sweepExtreme, entry + minStopAbs, entry + atrPad);
-      if (stop <= entry) stop = entry + Math.max(minStopAbs, atrPad, 1e-8);
-    }
+    const swing = sw.side==='long' ? recentSwing(bars, i, 'up', 30) : recentSwing(bars, i, 'down', 30);
+    const sweepRef = sw.ref ?? (sw.side==='long' ? Math.min(bars[i].low, imb.bottom) : Math.max(bars[i].high, imb.top));
+    const sweepBuf = 0.25 * curATR; // tunable
+    let structStop = sw.side==='long'
+        ? Math.min(sweepRef - sweepBuf, (swing?.price ?? entry) - sweepBuf)
+        : Math.max(sweepRef + sweepBuf, (swing?.price ?? entry) + sweepBuf);
+    // then enforce minStopAbs & ATR pad as you already do, finally:
+    stop = sw.side==='long' ? Math.min(structStop, entry - minStopAbs, entry - atrPad)
+                            : Math.max(structStop, entry + minStopAbs, entry + atrPad);
 
     const risk = Math.abs(entry - stop);
     if (risk <= 1e-8) { rej('scoreFail'); logger.debug?.({ ...baseCtx, evt: 'reject', reason: 'riskZero' }); return null; }
