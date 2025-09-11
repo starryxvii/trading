@@ -1,4 +1,4 @@
-// src/engine.js
+// src/backtest/engine.js
 // Public API unchanged: export function backtest(...)
 import { atr } from '../utils/indicators.js';
 import { positionSize } from '../risk/positionSizing.js';
@@ -44,7 +44,7 @@ export function backtest({
   maxLeverage = 2.0,
 
   // NEW: smart entry-chase to improve fill rate without violating risk
-  entryChase = { enabled: true, afterBars: 2, maxSlipR: 0.20, convertOnExpiry: true }
+  entryChase = { enabled: true, afterBars: 2, maxSlipR: 0.20, convertOnExpiry: false }
 }) {
   const closed = [];
   let eq = equity;

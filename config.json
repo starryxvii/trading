@@ -1,5 +1,5 @@
 {
-  "strategy": "ultra",
+  "mode": "backtest",
   "symbol": "BTC-USD",
   "interval": "5m",
   "period": "60d",
@@ -8,61 +8,80 @@
   "riskPct": 0.75,
   "rr": 2.0,
 
-  "session": "AUTO",
-  "debug": false,
-  "report": { "exportCsv": true },
-  "maxConcurrentTrades": 1,
-  "pollMs": 15000,
-
   "slippageBps": 1,
   "feeBps": 0,
 
-  "scaleOutAtR": 0.0,
-  "scaleOutFrac": 0.00,
-  "finalTP_R": 3.2,
+  "report": {
+    "exportCsv": true,
+    "outDir": "output"
+  },
 
-  "maxDailyLossPct": 1.5,
+  "oco": {
+    "mode": "intrabar",
+    "tieBreak": "pessimistic",
+    "clampStops": true,
+    "clampEpsBps": 0.25
+  },
+  "triggerMode": "intrabar",
+  "flattenAtClose": true,
 
-  "atrTrailMult": 0.0,
+  "scaleOutAtR": 1.2,
+  "scaleOutFrac": 0.35,
+  "finalTP_R": 4.2,
+
+  "maxDailyLossPct": 2.0,
+
+  "atrTrailMult": 0,
   "atrTrailPeriod": 14,
 
-  "mfeTrail": { "enabled": true, "armR": 1.6, "givebackR": 0.35 },
+  "mfeTrail": { "enabled": true, "armR": 2.4, "givebackR": 0.6 },
 
   "pyramiding": { "enabled": false },
 
-  "volScale": { "enabled": true, "atrPeriod": 14, "cutIfAtrX": 1.20, "cutFrac": 0.50, "noCutAboveR": 1.6 },
+  "volScale": {
+    "enabled": true,
+    "atrPeriod": 14,
+    "cutIfAtrX": 1.35,
+    "cutFrac": 0.40,
+    "noCutAboveR": 2.2
+  },
 
-  "oco": { "mode": "intrabar", "tieBreak": "optimistic", "clampStops": true, "clampEpsBps": 0.5 },
-  "triggerMode": "intrabar",
-  "flattenAtClose": false,
+  "backtest": {
+    "dailyMaxTrades": 0,
+    "postLossCooldownBars": 0,
+    "entryChase": { "enabled": true, "afterBars": 2, "maxSlipR": 0.20, "convertOnExpiry": false }
+  },
 
-  "position": { "qtyStep": 0.001, "minQty": 0.001, "maxLeverage": 2.0 },
+  "position": {
+    "qtyStep": 0.001,
+    "minQty": 0.001,
+    "maxLeverage": 2.0
+  },
+
+  "maxConcurrentTrades": 1,
+
+  "broker": {
+    "maxHoldMinLive": null,
+    "flattenWeekends": false,
+    "flattenFridayHourUTC": 21
+  },
+
+  "strategy": "ultra",
 
   "ultra": {
     "preset": "tight",
-    "log": { "enabled": true, "level": "debug", "json": true },
     "debug": true,
+    "useSessionWindows": true,
 
-    "useSessionWindows": false,
-    "killzones": "02:00-05:00,08:30-10:00,13:30-15:00",
-    "firstMinGuard": 1,
-    "lastMinGuard": 1,
-    "cashSessionGuard": false,
-
-    "lookback": 250,
     "imbalanceLookback": 30,
-    "sweepTolBps": 2.0,
+    "sweepTolBps": 2.5,
     "minAtrBps": 3,
-    "pdToleranceBps": 30,
-
-    "preferIFVG": true,
-    "requireMicroBOS": true,
-    "requireSweep": true,
+    "pdToleranceBps": 12,
 
     "usePD": true,
     "useOTE": true,
-    "oteLo": 0.58,
-    "oteHi": 0.79,
+    "oteLo": 0.5,
+    "oteHi": 0.82,
 
     "bias": {
       "enabled": true,
@@ -74,7 +93,7 @@
       "fallback15m": 15,
       "bandBps": 8
     },
-    "allowStrongSetupOverNeutralBias": true,
+    "allowStrongSetupOverNeutralBias": false,
 
     "confluence": {
       "minScore": 4,
@@ -87,27 +106,16 @@
     },
 
     "entryMode": "edge",
-    "entryExpiryBars": 6,
+    "entryExpiryBars": 5,
     "rr": 2.0,
     "atrPeriod": 14,
     "atrMult": 1.1,
     "minStopBps": 6,
     "breakevenAtR": 1.0,
-    "trailAfterR": 1.6,
+    "trailAfterR": 1.9,
     "cooldownBars": 8,
 
     "fvgMinBps": 2.5,
     "minBodyAtr": 0.4
-  },
-
-  "broker": {
-    "maxHoldMinLive": 360,
-    "flattenWeekends": true,
-    "flattenFridayHourUTC": 21
-  },
-
-  "backtest": {
-    "dailyMaxTrades": 3,
-    "postLossCooldownBars": 10
   }
 }
