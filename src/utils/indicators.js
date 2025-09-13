@@ -1,3 +1,5 @@
+// src/utils/indicators.js
+
 export function ema(values, period = 14) {
   const n = Math.max(1, period | 0);
   const out = new Array(values.length);

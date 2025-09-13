@@ -2,7 +2,16 @@
 // Public API unchanged: export function backtest(...)
 import { atr } from '../utils/indicators.js';
 import { positionSize } from '../risk/positionSizing.js';
-import { applyFill, clampStop, touchedLimit, ocoExitCheck, isEODBar, roundStep, estimateBarMs, ymdUTC } from './core/helpers.js';
+import {
+  applyFill,
+  clampStop,
+  touchedLimit,
+  ocoExitCheck,
+  isEODBar,
+  roundStep,
+  estimateBarMs,
+  ymdUTC
+} from './core/helpers.js';
 import { buildMetrics } from './core/metrics.js';
 import { exportTradesCsv } from './core/csv.js';
 
@@ -43,7 +52,7 @@ export function backtest({
   minQty = 0.001,
   maxLeverage = 2.0,
 
-  // NEW: smart entry-chase to improve fill rate without violating risk
+  // smart entry-chase to improve fill rate without violating risk
   entryChase = { enabled: true, afterBars: 2, maxSlipR: 0.20, convertOnExpiry: false }
 }) {
   const closed = [];
@@ -82,7 +91,25 @@ export function backtest({
     closed.push(record);
 
     openPos.size -= qty;
+    openPos._realized = (openPos._realized || 0) + pnl; // track realized PnL on this position
     return record;
+  }
+
+  // Pull stop to true net breakeven after any profitable partial
+  function tightenStopToNetBE(openPos, lastClosePx) {
+    if (!openPos || openPos.size <= 0) return;
+    const realized = openPos._realized || 0;
+    if (realized <= 0) return; // only tighten if net green so far
+    const dir = openPos.side === 'long' ? 1 : -1;
+    const remQty = openPos.size;
+    const beDelta = Math.abs(realized / remQty);
+    const bePx = (dir === 1)
+      ? (openPos.entryFill - beDelta)
+      : (openPos.entryFill + beDelta);
+    const tightened = (dir === 1)
+      ? Math.max(openPos.stop, bePx)
+      : Math.min(openPos.stop, bePx);
+    openPos.stop = oco?.clampStops ? clampStop(lastClosePx, tightened, openPos.side, oco) : tightened;
   }
 
   let hist = candles.slice(0, 200);
@@ -147,6 +174,9 @@ export function backtest({
       const { price: entryFill, fee: feeEntryUnit } = applyFill(entryPx, pending.side, { slippageBps, feeBps });
       const entryFeeTotal = feeEntryUnit * size;
 
+      // IMPORTANT: bind _initRisk to actual filled entry to keep -1R integrity even if we chased entry
+      const initRiskNow = Math.abs(entryPx - pending.stop) || 1e-8;
+
       open = {
         symbol,
         ...pending.meta,
@@ -162,7 +192,8 @@ export function backtest({
         baseSize: size,
         _mfeR: 0,
         _maeR: 0,
-        _adds: 0
+        _adds: 0,
+        _initRisk: initRiskNow
       };
 
       if (atrArr?.[i] !== undefined) {
@@ -274,6 +305,7 @@ export function backtest({
             const exitSide = open.side === 'long' ? 'short' : 'long';
             const { price: filled, fee: exitFeeUnit } = applyFill(price, exitSide, { slippageBps, feeBps });
             closeLeg({ openPos: open, qty: cutQty, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'SCALE' });
+            tightenStopToNetBE(open, price); // protect net BE after cut
             open._volCutDone = true;
           }
         }
@@ -324,10 +356,8 @@ export function backtest({
             open._scaled = true;
             open.takeProfit = (open.side === 'long') ? open.entry + finalTP_R * risk : open.entry - finalTP_R * risk;
 
-            // NEW: BE on remainder
-            const be = open.entry;
-            const tightenedBE = (open.side === 'long') ? Math.max(open.stop, be) : Math.min(open.stop, be);
-            open.stop = oco?.clampStops ? clampStop(c.close, tightenedBE, open.side, oco) : tightenedBE;
+            // Stronger protection: true net BE on remainder
+            tightenStopToNetBE(open, c.close);
             open._beArmed = true;
           }
         }

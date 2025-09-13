@@ -1,3 +1,5 @@
+// src/backtest/core/helpers.js
+
 // Core helper utilities for backtest engine
 export function applyFill(price, side, { slippageBps = 0, feeBps = 0 }) {
   const slip = (slippageBps / 10000) * price;

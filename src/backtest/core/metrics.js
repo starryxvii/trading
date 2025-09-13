@@ -1,4 +1,5 @@
-// src/engine/core/metrics.js
+// src/backtest/core/metrics.js
+
 function sum(a){ return a.reduce((s,x)=>s+x,0); }
 function mean(a){ return a.length ? sum(a)/a.length : 0; }
 function stddev(a){ if(a.length<=1) return 0; const m=mean(a); return Math.sqrt(mean(a.map(x=>(x-m)**2))); }

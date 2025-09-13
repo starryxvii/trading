@@ -11,17 +11,9 @@
   "slippageBps": 1,
   "feeBps": 0,
 
-  "report": {
-    "exportCsv": true,
-    "outDir": "output"
-  },
+  "report": { "exportCsv": true, "outDir": "output" },
 
-  "oco": {
-    "mode": "intrabar",
-    "tieBreak": "pessimistic",
-    "clampStops": true,
-    "clampEpsBps": 0.25
-  },
+  "oco": { "mode": "intrabar", "tieBreak": "pessimistic", "clampStops": true, "clampEpsBps": 0.25 },
   "triggerMode": "intrabar",
   "flattenAtClose": true,
 
@@ -41,30 +33,22 @@
   "volScale": {
     "enabled": true,
     "atrPeriod": 14,
-    "cutIfAtrX": 1.35,
-    "cutFrac": 0.40,
+    "cutIfAtrX": 1.45,
+    "cutFrac": 0.33,
     "noCutAboveR": 2.2
   },
 
   "backtest": {
     "dailyMaxTrades": 0,
     "postLossCooldownBars": 0,
-    "entryChase": { "enabled": true, "afterBars": 2, "maxSlipR": 0.20, "convertOnExpiry": false }
+    "entryChase": { "enabled": false }
   },
 
-  "position": {
-    "qtyStep": 0.001,
-    "minQty": 0.001,
-    "maxLeverage": 2.0
-  },
+  "position": { "qtyStep": 0.001, "minQty": 0.001, "maxLeverage": 2.0 },
 
   "maxConcurrentTrades": 1,
 
-  "broker": {
-    "maxHoldMinLive": null,
-    "flattenWeekends": false,
-    "flattenFridayHourUTC": 21
-  },
+  "broker": { "maxHoldMinLive": null, "flattenWeekends": false, "flattenFridayHourUTC": 21 },
 
   "strategy": "ultra",
 
@@ -76,7 +60,7 @@
     "imbalanceLookback": 30,
     "sweepTolBps": 2.5,
     "minAtrBps": 3,
-    "pdToleranceBps": 12,
+    "pdToleranceBps": 36,
 
     "usePD": true,
     "useOTE": true,
@@ -95,15 +79,7 @@
     },
     "allowStrongSetupOverNeutralBias": false,
 
-    "confluence": {
-      "minScore": 4,
-      "sweepPts": 1,
-      "imbPts": 1,
-      "bosPts": 1,
-      "pdPts": 0,
-      "otePts": 1,
-      "htfPts": 1
-    },
+    "confluence": { "minScore": 4, "sweepPts": 1, "imbPts": 1, "bosPts": 1, "pdPts": 0, "otePts": 1, "htfPts": 1 },
 
     "entryMode": "edge",
     "entryExpiryBars": 5,

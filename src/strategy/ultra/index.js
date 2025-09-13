@@ -1,3 +1,4 @@
+// src/strategy/ultra/index.js
 import { ema, atr } from '../../utils/indicators.js';
 import { minutesET } from '../../utils/time.js';
 import { createLogger } from '../../utils/logger.js';
@@ -144,18 +145,23 @@ export function ultraSignalFactory(opts = {}) {
       if (!(priceOK || midOK)) return null;
     }
 
+    // OTE: compute using swing-to-swing range (proper retracement zone)
     if (useOTE && imb) {
       const ph = recentSwing(bars, i, 'down', 30);
       const pl = recentSwing(bars, i, 'up', 30);
       let oteOK = true;
-      if (sw.side === 'long' && pl) {
-        const len = price - pl.price;
-        const z1 = pl.price + len * oteLo, z2 = pl.price + len * oteHi;
-        oteOK = (imb.mid >= Math.min(z1, z2) && imb.mid <= Math.max(z1, z2));
-      } else if (sw.side === 'short' && ph) {
-        const len = price - ph.price;
-        const z1 = ph.price + len * oteLo, z2 = ph.price + len * oteHi;
-        oteOK = (imb.mid >= Math.min(z1, z2) && imb.mid <= Math.max(z1, z2));
+      if (sw.side === 'long' && ph && pl && ph.price > pl.price) {
+        const range = ph.price - pl.price;
+        const z1 = ph.price - range * oteHi;
+        const z2 = ph.price - range * oteLo;
+        const loZ = Math.min(z1, z2), hiZ = Math.max(z1, z2);
+        oteOK = (imb.mid >= loZ && imb.mid <= hiZ);
+      } else if (sw.side === 'short' && ph && pl && ph.price > pl.price) {
+        const range = ph.price - pl.price;
+        const z1 = pl.price + range * oteLo;
+        const z2 = pl.price + range * oteHi;
+        const loZ = Math.min(z1, z2), hiZ = Math.max(z1, z2);
+        oteOK = (imb.mid >= loZ && imb.mid <= hiZ);
       }
       if (!oteOK) return null;
     }
@@ -164,18 +170,33 @@ export function ultraSignalFactory(opts = {}) {
     const htfOK = bias?.enabled ? biasAgree : true;
     if (!htfOK) return null;
 
-    // scoring unchanged …
+    // --- entry/stop/tp with min stop bps enforcement ---
+    const entryEdge = (entryMode === 'ce') ? imb.mid : (sw.side === 'long' ? imb.bottom : imb.top);
+    let stopRaw = sw.side === 'long' ? (imb.bottom - atrMult * curATR) : (imb.top + atrMult * curATR);
 
-    // entry/stop/tp calculation unchanged …
+    // respect minStopBps (in absolute bps vs current price)
+    const stopBps = relBps(Math.abs(entryEdge - stopRaw), price);
+    if (stopBps < (minStopBps ?? 0)) {
+      const want = (minStopBps / 10000) * price;
+      stopRaw = (sw.side === 'long') ? (entryEdge - want) : (entryEdge + want);
+    }
+
+    const takeProfit = sw.side === 'long'
+      ? (entryEdge + rr * Math.abs(entryEdge - stopRaw))
+      : (entryEdge - rr * Math.abs(entryEdge - stopRaw));
 
     return {
       side: sw.side,
-      entry: (entryMode === 'ce') ? imb.mid : (sw.side === 'long' ? imb.bottom : imb.top),
-      stop: sw.side === 'long' ? imb.bottom - atrMult * curATR : imb.top + atrMult * curATR,
-      takeProfit: sw.side === 'long' ? imb.bottom + rr * atrMult * curATR : imb.top - rr * atrMult * curATR,
-      _initRisk: atrMult * curATR,
+      entry: entryEdge,
+      stop: stopRaw,
+      takeProfit,
+      _initRisk: Math.abs(entryEdge - stopRaw),
       _rr: rr,
-      _entryExpiryBars: entryExpiryBars
+      _entryExpiryBars: entryExpiryBars,
+      _imb: imb,
+      _breakevenAtR: breakevenAtR,
+      _trailAfterR: trailAfterR,
+      _cooldownBars: cooldownBars
     };
   };
 
