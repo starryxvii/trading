@@ -6,11 +6,13 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
+const projectRoot = path.join(__dirname, '..', '..', '..');
 
 const safe = s => String(s).replace(/[^-_.A-Za-z0-9]/g, '_');
 
-export function exportTradesCsv(closed, { symbol, interval = 'tf', range = 'range' }) {
+export function exportTradesCsv(closed, { symbol, interval = 'tf', range = 'range', outDir } = {}) {
   if (!closed.length) return;
+
   const rows = [
     ['time_open','time_close','side','entry','stop','takeProfit','exit','reason','size','pnl','R','mfeR','maeR','adds','entryATR','exitATR'].join(','),
     ...closed.map(t => [
@@ -38,14 +40,16 @@ export function exportTradesCsv(closed, { symbol, interval = 'tf', range = 'rang
     ].join(','))
   ].join('\n');
 
-  const outDir = path.join(__dirname, '..', '..', '..', 'output');
+  const dirFromCfg = outDir && String(outDir).trim().length ? outDir : 'output';
+  const outDirAbs = path.isAbsolute(dirFromCfg) ? dirFromCfg : path.join(projectRoot, dirFromCfg);
+
   const fname  = `trades-${safe(symbol)}-${safe(interval)}-${safe(range)}.csv`;
-  const out    = path.join(outDir, fname);
+  const out    = path.join(outDirAbs, fname);
 
   try {
-    fs.mkdirSync(outDir, { recursive: true });
+    fs.mkdirSync(outDirAbs, { recursive: true });
     fs.writeFileSync(out, rows, 'utf8');
-    console.log(`\n[report] CSV saved: output/${fname}`);
+    console.log(`\n[report] CSV saved: ${path.relative(projectRoot, out)}`);
   } catch (e) {
     console.warn('[report] CSV save failed:', e.message);
   }

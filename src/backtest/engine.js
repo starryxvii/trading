@@ -1,5 +1,3 @@
-// src/backtest/engine.js
-// Public API unchanged: export function backtest(...)
 import { atr } from '../utils/indicators.js';
 import { positionSize } from '../risk/positionSizing.js';
 import {
@@ -91,15 +89,14 @@ export function backtest({
     closed.push(record);
 
     openPos.size -= qty;
-    openPos._realized = (openPos._realized || 0) + pnl; // track realized PnL on this position
+    openPos._realized = (openPos._realized || 0) + pnl;
     return record;
   }
 
-  // Pull stop to true net breakeven after any profitable partial
   function tightenStopToNetBE(openPos, lastClosePx) {
     if (!openPos || openPos.size <= 0) return;
     const realized = openPos._realized || 0;
-    if (realized <= 0) return; // only tighten if net green so far
+    if (realized <= 0) return;
     const dir = openPos.side === 'long' ? 1 : -1;
     const remQty = openPos.size;
     const beDelta = Math.abs(realized / remQty);
@@ -118,7 +115,6 @@ export function backtest({
     const c = candles[i];
     hist.push(c);
 
-    // NOTE: for pending limit fills we always prefer intrabar detection to avoid missed fills.
     const trigMode = triggerMode || (oco?.mode || 'intrabar');
     const trigModeFill = 'intrabar';
 
@@ -131,7 +127,7 @@ export function backtest({
       const barsHeld = Math.max(1, Math.round((c.time - open.openTime) / estBarMs));
       if (barsHeld >= open._maxBarsInTrade) {
         const exitSide = open.side === 'long' ? 'short' : 'long';
-        const { price: filled, fee: exitFeeUnit } = applyFill(c.close, exitSide, { slippageBps, feeBps });
+        const { price: filled, fee: exitFeeUnit } = applyFill(c.close, exitSide, { slippageBps, feeBps, kind: 'market' });
         closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'TIME' });
         cooldown = open._cooldownBars || 0;
         open = null;
@@ -142,7 +138,7 @@ export function backtest({
       const heldMin = (c.time - open.openTime) / 60000;
       if (heldMin >= open._maxHoldMin) {
         const exitSide = open.side === 'long' ? 'short' : 'long';
-        const { price: filled, fee: exitFeeUnit } = applyFill(c.close, exitSide, { slippageBps, feeBps });
+        const { price: filled, fee: exitFeeUnit } = applyFill(c.close, exitSide, { slippageBps, feeBps, kind: 'market' });
         closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'TIME' });
         cooldown = open._cooldownBars || 0;
         open = null;
@@ -152,98 +148,53 @@ export function backtest({
 
     if (flattenAtClose && open && isEODBar(c.time)) {
       const exitSide = open.side === 'long' ? 'short' : 'long';
-      const { price: filled, fee: exitFeeUnit } = applyFill(c.close, exitSide, { slippageBps, feeBps });
+      const { price: filled, fee: exitFeeUnit } = applyFill(c.close, exitSide, { slippageBps, feeBps, kind: 'market' });
       closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'EOD' });
       cooldown = open._cooldownBars || 0;
       open = null;
       continue;
     }
 
-    // helper to open from current pending at a specific entry price
-    function openFromPending(entryPx) {
-      const sizeRaw = positionSize({
-        equity: eq,
-        entry: entryPx,
-        stop: pending.stop,
-        riskFraction: pending.riskFrac,
-        qtyStep, minQty, maxLeverage
-      });
-      const size = roundStep(sizeRaw, qtyStep);
-      if (size < minQty) return false;
-
-      const { price: entryFill, fee: feeEntryUnit } = applyFill(entryPx, pending.side, { slippageBps, feeBps });
-      const entryFeeTotal = feeEntryUnit * size;
-
-      // IMPORTANT: bind _initRisk to actual filled entry to keep -1R integrity even if we chased entry
-      const initRiskNow = Math.abs(entryPx - pending.stop) || 1e-8;
-
-      open = {
-        symbol,
-        ...pending.meta,
-        side: pending.side,
-        entry: entryPx,
-        stop: pending.stop,
-        takeProfit: pending.tp,
-        size,
-        openTime: c.time,
-        entryFill,
-        entryFeeTotal,
-        initSize: size,
-        baseSize: size,
-        _mfeR: 0,
-        _maeR: 0,
-        _adds: 0,
-        _initRisk: initRiskNow
-      };
-
-      if (atrArr?.[i] !== undefined) {
-        open.entryATR = atrArr[i];
-        open._lastATR = atrArr[i];
-      }
-      dayTrades++;
-      pending = null;
-      return true;
-    }
-
-    // --- pending limit (fill/expire) ---
+    // --- manage existing pending ---
     if (!open && pending) {
       const maxLossDollars = (maxDailyLossPct / 100) * eq;
       const dailyLossHit = dayPnl <= -Math.abs(maxLossDollars);
       const tradesCapHit = (dailyMaxTrades > 0 && dayTrades >= dailyMaxTrades);
 
-      // Expire if rules say so
       if (i > pending.expiresAt || dailyLossHit || tradesCapHit) {
-        // On expiry, optionally convert to market if allowed and slippage is bounded in R
         if (entryChase?.enabled && entryChase?.convertOnExpiry) {
           const riskAtEdge = Math.abs(pending.meta._initRisk ?? (pending.entry - pending.stop));
           const priceNow = c.close;
           const dir = pending.side === 'long' ? 1 : -1;
           const slippedR = Math.max(0, (dir === 1 ? (priceNow - pending.entry) : (pending.entry - priceNow))) / Math.max(1e-8, riskAtEdge);
           if (slippedR <= (entryChase.maxSlipR ?? 0.2)) {
-            openFromPending(priceNow);
+            const ok = openFromPending(priceNow, 'market');
+            if (!ok) pending = null;
+          } else {
+            pending = null;
           }
+        } else {
+          pending = null;
         }
-        pending = null;
       } else {
-        // try normal limit fill first (intrabar by design)
         if (touchedLimit(pending.side, pending.entry, c, trigModeFill)) {
-          openFromPending(pending.entry);
+          const ok = openFromPending(pending.entry, 'limit');
+          if (!ok) pending = null;
         } else if (entryChase?.enabled) {
-          // if not filled for N bars, upgrade entry to CE (imbalance mid) once
           const elapsed = i - (pending.startedAtIndex ?? i);
           const mid = pending.meta?._imb?.mid;
           if (!pending._chasedCE && mid !== undefined && elapsed >= Math.max(1, entryChase.afterBars)) {
-            pending.entry = mid; // softer entry to improve fill
+            pending.entry = mid;
             pending._chasedCE = true;
           }
-          // if still not filled and price has moved a bit in favor but within max slip (in R), flip to market now
           if (pending._chasedCE) {
             const riskRef = Math.abs((pending.meta?._initRisk) ?? (pending.entry - pending.stop));
             const priceNow = c.close;
             const dir = pending.side === 'long' ? 1 : -1;
             const slippedR = Math.max(0, (dir === 1 ? (priceNow - pending.entry) : (pending.entry - priceNow))) / Math.max(1e-8, riskRef);
             if (slippedR > 0 && slippedR <= (entryChase.maxSlipR ?? 0.2)) {
-              openFromPending(priceNow);
+              const ok = openFromPending(priceNow, 'market');
+              if (!ok) pending = null;
             }
           }
         }
@@ -259,7 +210,6 @@ export function backtest({
 
       if (atrArr?.[i] !== undefined) open._lastATR = atrArr[i];
 
-      // run stops, trails, scale, pyramiding
       const hiR = (open.side === 'long') ? (hi - open.entry) / risk : (open.entry - lo) / risk;
       const loR = (open.side === 'long') ? (lo - open.entry) / risk : (open.entry - hi) / risk;
       const rNow = dir === 1 ? (price - open.entry) / risk : (open.entry - price) / risk;
@@ -303,9 +253,9 @@ export function backtest({
           const cutQty = roundStep(cutRaw, qtyStep);
           if (cutQty >= minQty && cutQty < open.size) {
             const exitSide = open.side === 'long' ? 'short' : 'long';
-            const { price: filled, fee: exitFeeUnit } = applyFill(price, exitSide, { slippageBps, feeBps });
+            const { price: filled, fee: exitFeeUnit } = applyFill(price, exitSide, { slippageBps, feeBps, kind: 'market' });
             closeLeg({ openPos: open, qty: cutQty, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'SCALE' });
-            tightenStopToNetBE(open, price); // protect net BE after cut
+            tightenStopToNetBE(open, price);
             open._volCutDone = true;
           }
         }
@@ -328,7 +278,7 @@ export function backtest({
           const addRaw = base * (pyramiding.addFrac ?? 0.25);
           const addQty = roundStep(addRaw, qtyStep);
           if (addQty >= minQty) {
-            const { price: addFill, fee: addFeeUnit } = applyFill(triggerPx, open.side, { slippageBps, feeBps });
+            const { price: addFill, fee: addFeeUnit } = applyFill(triggerPx, open.side, { slippageBps, feeBps, kind: 'limit' });
             const newSize = open.size + addQty;
             open.entryFeeTotal = (open.entryFeeTotal || 0) + addFeeUnit * addQty;
             open.entryFill = ((open.entryFill * open.size) + (addFill * addQty)) / newSize;
@@ -348,15 +298,13 @@ export function backtest({
           : (trigMode === 'intrabar' ? (c.low  <= trigPx) : (c.close <= trigPx));
         if (touched) {
           const exitSide = open.side === 'long' ? 'short' : 'long';
-          const { price: filled, fee: exitFeeUnit } = applyFill(trigPx, exitSide, { slippageBps, feeBps });
+          const { price: filled, fee: exitFeeUnit } = applyFill(trigPx, exitSide, { slippageBps, feeBps, kind: 'limit' });
           const want = open.size * scaleOutFrac;
           const qty = roundStep(want, qtyStep);
           if (qty >= minQty && qty < open.size) {
             closeLeg({ openPos: open, qty, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'SCALE' });
             open._scaled = true;
             open.takeProfit = (open.side === 'long') ? open.entry + finalTP_R * risk : open.entry - finalTP_R * risk;
-
-            // Stronger protection: true net BE on remainder
             tightenStopToNetBE(open, c.close);
             open._beArmed = true;
           }
@@ -369,7 +317,8 @@ export function backtest({
         bar: c, mode: oco?.mode || 'intrabar', tieBreak: oco?.tieBreak || 'pessimistic'
       });
       if (hit) {
-        const { price: filled, fee: feeUnit } = applyFill(px, exitSide, { slippageBps, feeBps });
+        const exitKind = hit === 'TP' ? 'limit' : 'stop';
+        const { price: filled, fee: feeUnit } = applyFill(px, exitSide, { slippageBps, feeBps, kind: exitKind });
         closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: feeUnit, time: c.time, reason: hit });
         cooldown = (hit === 'SL' ? Math.max(cooldown, postLossCooldownBars) : cooldown) || (open?._cooldownBars || 0);
         open = null;
@@ -382,10 +331,11 @@ export function backtest({
     if (dayPnl <= -Math.abs(maxLossDollars)) { pending = null; continue; }
     if (dailyMaxTrades > 0 && dayTrades >= dailyMaxTrades) { pending = null; continue; }
 
-    // request a new signal and build a pending order
+    // --- request a new signal; build pending; try same-bar intrabar fill if touched ---
     if (!pending) {
       const sig = signal({ candles: hist });
       if (!sig) continue;
+
       const expiryBars = sig._entryExpiryBars ?? 5;
       pending = {
         side: sig.side,
@@ -397,13 +347,63 @@ export function backtest({
         startedAtIndex: i,
         meta: sig
       };
+
+      // if the current bar already touched our limit, treat as a limit fill
+      if (touchedLimit(pending.side, pending.entry, c, trigModeFill)) {
+        const ok = openFromPending(pending.entry, 'limit');
+        if (!ok) pending = null;
+      }
+    }
+
+    // helper lives at end so it can see closures above
+    function openFromPending(entryPx, kind = 'limit') {
+      const sizeRaw = positionSize({
+        equity: eq,
+        entry: entryPx,
+        stop: pending.stop,
+        riskFraction: pending.riskFrac,
+        qtyStep, minQty, maxLeverage
+      });
+      const size = roundStep(sizeRaw, qtyStep);
+      if (size < minQty) return false;
+
+      const { price: entryFill, fee: feeEntryUnit } = applyFill(entryPx, pending.side, { slippageBps, feeBps, kind });
+      const entryFeeTotal = feeEntryUnit * size;
+
+      const initRiskNow = Math.abs(entryPx - pending.stop) || 1e-8;
+
+      open = {
+        symbol,
+        ...pending.meta,
+        side: pending.side,
+        entry: entryPx,
+        stop: pending.stop,
+        takeProfit: pending.tp,
+        size,
+        openTime: c.time,
+        entryFill,
+        entryFeeTotal,
+        initSize: size,
+        baseSize: size,
+        _mfeR: 0,
+        _maeR: 0,
+        _adds: 0,
+        _initRisk: initRiskNow
+      };
+
+      if (atrArr?.[i] !== undefined) {
+        open.entryATR = atrArr[i];
+        open._lastATR = atrArr[i];
+      }
+      dayTrades++;
+      pending = null;
+      return true;
     }
   }
 
-  // Metrics & CSV
   const metrics = buildMetrics({ closed, equityStart: equity, equityFinal: eq, candles, estBarMs });
   if (report?.exportCsv && closed.length) {
-    exportTradesCsv(closed, { symbol, interval, range });
+    exportTradesCsv(closed, { symbol, interval, range, outDir: report?.outDir });
   }
   return { trades: closed, metrics };
 }

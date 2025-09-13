@@ -1,20 +1,44 @@
 // src/utils/time.js
 
-// crude ET minutes (keeps behavior consistent with your engine)
-export function minutesET(timeMs) {
-  const d = new Date(timeMs);
-  const h = d.getUTCHours(), m = d.getUTCMinutes();
-  return ((h - 4 + 24) % 24) * 60 + m;
+// Determine US DST (second Sunday in March to first Sunday in November, 2:00 local)
+function usDstBoundsUTC(year) {
+  // second Sunday in March
+  let d = new Date(Date.UTC(year, 2, 1, 7, 0, 0)); // 07:00 UTC ~ 02:00 ET
+  let sundays = 0;
+  while (d.getUTCMonth() === 2) {
+    if (d.getUTCDay() === 0) sundays++;
+    if (sundays === 2) break;
+    d = new Date(d.getTime() + 24 * 3600 * 1000);
+  }
+  const dstStart = new Date(Date.UTC(year, 2, d.getUTCDate(), 7, 0, 0)); // 2:00 ET = 7:00 UTC
+
+  // first Sunday in November
+  let e = new Date(Date.UTC(year, 10, 1, 6, 0, 0)); // 06:00 UTC ~ 01:00 ET (fallback occurs at 2)
+  while (e.getUTCDay() !== 0) {
+    e = new Date(e.getTime() + 24 * 3600 * 1000);
+  }
+  const dstEnd = new Date(Date.UTC(year, 10, e.getUTCDate(), 6, 0, 0)); // 2:00 ET = 6:00 UTC (standard)
+  return { dstStart, dstEnd };
 }
 
-// Generic sessions:
-//  - 'NYSE': 09:30–16:00 ET
-//  - 'FUT':  18:00–17:00 ET (CME nearly 24h) with a 60m break (17:00–18:00)
-//  - 'AUTO': pass-through (always true). Use for symbols with odd sessions.
+function isUsEasternDST(utcMs) {
+  const d = new Date(utcMs);
+  const { dstStart, dstEnd } = usDstBoundsUTC(d.getUTCFullYear());
+  return d >= dstStart && d < dstEnd;
+}
+
+// ET minutes since midnight for a UTC timestamp, with DST
+export function minutesET(timeMs) {
+  const d = new Date(timeMs);
+  const offset = isUsEasternDST(timeMs) ? 4 : 5; // UTC-4 (EDT) or UTC-5 (EST)
+  const h = d.getUTCHours(), m = d.getUTCMinutes();
+  return ((h - offset + 24) % 24) * 60 + m;
+}
+
+// Sessions and windows helpers (as before)
 export function isSession(timeMs, session = 'NYSE') {
   const day = new Date(timeMs).getUTCDay(); // 0 Sun ... 6 Sat
   if (day === 0 || day === 6) {
-    // Allow futures on Sunday evening – quick handling (CME reopens ~18:00 ET)
     if (session === 'FUT') {
       const m = minutesET(timeMs);
       return m >= (18 * 60) || m < (17 * 60);
@@ -26,19 +50,15 @@ export function isSession(timeMs, session = 'NYSE') {
   if (session === 'AUTO') return true;
 
   if (session === 'FUT') {
-    // Open 18:00 ET prior day → 17:00 ET (1h maintenance)
-    // Equivalent check: NOT in 17:00–18:00
-    const start = 18 * 60, maintStart = 17 * 60, maintEnd = 18 * 60;
+    const maintStart = 17 * 60, maintEnd = 18 * 60;
     return !(m >= maintStart && m < maintEnd) && m >= 0 && m <= (24 * 60 - 1);
   }
 
-  // Default: NYSE cash
   const open = 9 * 60 + 30;
   const close = 16 * 60;
   return m >= open && m <= close;
 }
 
-// Optional trading windows, e.g. "09:45-11:30,13:30-15:30"
 export function parseWindowsCSV(csv) {
   if (!csv) return null;
   return csv.split(',').map(s => s.trim()).map(w => {

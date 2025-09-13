@@ -1,10 +1,19 @@
-// src/backtest/core/helpers.js
-
 // Core helper utilities for backtest engine
-export function applyFill(price, side, { slippageBps = 0, feeBps = 0 }) {
-  const slip = (slippageBps / 10000) * price;
+
+/**
+ * Apply a trade fill with configurable slippage "kind":
+ *  - 'market' (default): use configured slippageBps
+ *  - 'limit' : much smaller slippage (price improvement realistically near zero)
+ *  - 'stop'  : slightly worse than market to reflect stop-market slips
+ */
+export function applyFill(price, side, { slippageBps = 0, feeBps = 0, kind = 'market' } = {}) {
+  let effBps = slippageBps;
+  if (kind === 'limit') effBps *= 0.25;   // friendlier fills on limit hits
+  if (kind === 'stop')  effBps *= 1.25;   // worse fills on stop-outs
+
+  const slip = (effBps / 10000) * price;
   const filled = side === 'long' ? price + slip : price - slip;
-  const feePerUnit = (feeBps / 10000) * filled;
+  const feePerUnit = (feeBps / 10000) * Math.abs(filled);
   return { price: filled, fee: feePerUnit };
 }
 

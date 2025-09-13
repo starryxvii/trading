@@ -5,28 +5,29 @@
   "period": "60d",
 
   "equity": 10000,
-  "riskPct": 0.75,
-  "rr": 2.0,
+  "riskPct": 0.18,
 
-  "slippageBps": 1,
+  "rr": 1.6,
+
+  "slippageBps": 2,
   "feeBps": 0,
 
   "report": { "exportCsv": true, "outDir": "output" },
 
   "oco": { "mode": "intrabar", "tieBreak": "pessimistic", "clampStops": true, "clampEpsBps": 0.25 },
   "triggerMode": "intrabar",
-  "flattenAtClose": true,
+  "flattenAtClose": false,
 
-  "scaleOutAtR": 1.2,
-  "scaleOutFrac": 0.35,
-  "finalTP_R": 4.2,
+  "scaleOutAtR": 1.00,
+  "scaleOutFrac": 0.50,
+  "finalTP_R": 3.00,
 
-  "maxDailyLossPct": 2.0,
+  "maxDailyLossPct": 1.0,
 
-  "atrTrailMult": 0,
+  "atrTrailMult": 0.45,
   "atrTrailPeriod": 14,
 
-  "mfeTrail": { "enabled": true, "armR": 2.4, "givebackR": 0.6 },
+  "mfeTrail": { "enabled": true, "armR": 1.80, "givebackR": 0.60 },
 
   "pyramiding": { "enabled": false },
 
@@ -35,13 +36,13 @@
     "atrPeriod": 14,
     "cutIfAtrX": 1.45,
     "cutFrac": 0.33,
-    "noCutAboveR": 2.2
+    "noCutAboveR": 2.20
   },
 
   "backtest": {
-    "dailyMaxTrades": 0,
-    "postLossCooldownBars": 0,
-    "entryChase": { "enabled": false }
+    "dailyMaxTrades": 6,
+    "postLossCooldownBars": 12,
+    "entryChase": { "enabled": false, "afterBars": 1, "maxSlipR": 0.15, "convertOnExpiry": true }
   },
 
   "position": { "qtyStep": 0.001, "minQty": 0.001, "maxLeverage": 2.0 },
@@ -53,45 +54,46 @@
   "strategy": "ultra",
 
   "ultra": {
-    "preset": "tight",
+    "preset": "crypto",
     "debug": true,
-    "useSessionWindows": true,
 
+    "useSessionWindows": true,
+    "killzones": "07:00-10:30,13:00-16:00,19:00-22:00",
+    "firstMinGuard": 1,
+    "lastMinGuard": 1,
+
+    "lookback": 250,
     "imbalanceLookback": 30,
     "sweepTolBps": 2.5,
-    "minAtrBps": 3,
-    "pdToleranceBps": 36,
+    "minAtrBps": 6.0,
+    "pdToleranceBps": 60,
 
-    "usePD": true,
-    "useOTE": true,
-    "oteLo": 0.5,
-    "oteHi": 0.82,
+    "preferIFVG": true,
+    "requireMicroBOS": true,
+    "requireSweep": true,
 
-    "bias": {
-      "enabled": true,
-      "gate": "strict",
-      "emaPeriod": 50,
-      "slopeBps": 1,
-      "htf4h": 240,
-      "htf1h": 60,
-      "fallback15m": 15,
-      "bandBps": 8
-    },
-    "allowStrongSetupOverNeutralBias": false,
+    "usePD": false,
+    "useOTE": false,
 
-    "confluence": { "minScore": 4, "sweepPts": 1, "imbPts": 1, "bosPts": 1, "pdPts": 0, "otePts": 1, "htfPts": 1 },
+    "bias": { "enabled": true, "gate": "strict", "emaPeriod": 50, "slopeBps": 1, "htf4h": 240, "htf1h": 60, "fallback15m": 15, "bandBps": 8 },
+    "allowStrongSetupOverNeutralBias": true,
+
+    "confluence": { "minScore": 3, "sweepPts": 1, "imbPts": 1, "bosPts": 0, "pdPts": 0, "otePts": 0, "htfPts": 1 },
 
     "entryMode": "edge",
-    "entryExpiryBars": 5,
+    "entryExpiryBars": 4,
     "rr": 2.0,
     "atrPeriod": 14,
-    "atrMult": 1.1,
-    "minStopBps": 6,
-    "breakevenAtR": 1.0,
-    "trailAfterR": 1.9,
+    "atrMult": 1.6,
+    "minStopBps": 10,
+    "breakevenAtR": 0.80,
+    "trailAfterR": 1.80,
     "cooldownBars": 8,
 
-    "fvgMinBps": 2.5,
-    "minBodyAtr": 0.4
+    "wickRejection": { "enabled": false },
+
+    "fvgMinBps": 8.0,
+    "minBodyAtr": 1.0,
+    "needFvgAtr": 1.10
   }
 }
