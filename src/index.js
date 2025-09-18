@@ -6,7 +6,6 @@ import { fileURLToPath } from 'url';
 import { fetchHistorical, fetchLatestCandle } from './data/yahoo.js';
 import { backtest } from './backtest/engine.js';
 import { ultraSignalFactory } from './strategy/ultra/index.js';
-import { smcSignalFactory } from './strategy/smc.js';
 import { positionSize } from './risk/positionSizing.js';
 import { PaperBroker } from './broker/paper.js';
 
@@ -23,7 +22,6 @@ function loadConfig() {
 function buildSignal(cfg) {
   const strat = (cfg.strategy || 'ultra').toLowerCase();
   if (strat === 'ultra') return ultraSignalFactory({ ...cfg.ultra });
-  if (strat === 'smc')   return smcSignalFactory({ ...cfg.smc, session: cfg.session, debug: cfg.debug });
   return ultraSignalFactory({ ...cfg.ultra });
 }
 
