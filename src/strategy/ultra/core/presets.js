@@ -2,35 +2,34 @@
 export function presetDefaults(name){
   const p = (name || 'standard').toLowerCase();
 
-  // Designed for BTC/crypto on intraday (5m/15m). Much looser gates.
+  // Crypto intraday: looser gates, 24/7, OTE on by default for 79% flavor.
   if (p === 'crypto') {
     return {
-      // sessioning
-      useSessionWindows: false,               // crypto 24/7
+      useSessionWindows: false,
       killzones: "00:00-23:59",
 
-      // pattern detection
       imbalanceLookback: 30,
       fvgMinBps: 2.0,
       minAtrBps: 2.5,
-      needFvgAtr: 0.6,                        // allow smaller FVG/ATR than “tight”
+      needFvgAtr: 0.6,
       minBodyAtr: 0.25,
 
-      // confirmations
-      requireMicroBOS: false,
-      requireSweep: false,                    // don't require a sweep on crypto by default
+      requireMicroBOS: true,
+      requireSweep: false,
 
-      // bias
       allowStrongSetupOverNeutralBias: true,
-      // higher-TF bias params keep defaults from bias config
-      // but we will tolerate neutral if the setup is strong
 
-      // PD / OTE
-      usePD: false,                           // PD window is less meaningful on 24/7 assets
-      pdToleranceBps: 60,                     // if enabled later, make it wide
+      usePD: false,
+      pdToleranceBps: 60,
+
+      // “79%” confirmation via OTE zone
       useOTE: true,
-      oteLo: 0.50,
-      oteHi: 0.85
+      oteLo: 0.70,
+      oteHi: 0.82,
+
+      // TP logic defaults
+      tpMode: 'hybrid',        // 'rr' | 'key' | 'hybrid'
+      rrMinForKey: 1.20
     };
   }
 
@@ -50,7 +49,9 @@ export function presetDefaults(name){
       pdToleranceBps:50,
       useOTE:true,
       oteLo:0.55,
-      oteHi:0.80
+      oteHi:0.80,
+      tpMode: 'hybrid',
+      rrMinForKey: 1.15
     };
   }
 
@@ -70,11 +71,13 @@ export function presetDefaults(name){
       pdToleranceBps:30,
       useOTE:true,
       oteLo:0.62,
-      oteHi:0.79
+      oteHi:0.79,
+      tpMode: 'rr',
+      rrMinForKey: 1.50
     };
   }
 
-  // default "standard" leaves most to function defaults, but set reasonable windows for non-24/7
+  // default
   return {
     useSessionWindows:false,
     killzones: "08:30-11:30,13:30-15:30",
@@ -90,6 +93,8 @@ export function presetDefaults(name){
     pdToleranceBps:36,
     useOTE:true,
     oteLo:0.60,
-    oteHi:0.80
+    oteHi:0.80,
+    tpMode: 'hybrid',
+    rrMinForKey: 1.25
   };
 }

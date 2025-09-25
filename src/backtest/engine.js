@@ -51,7 +51,12 @@ export function backtest({
   maxLeverage = 2.0,
 
   // smart entry-chase to improve fill rate without violating risk
-  entryChase = { enabled: true, afterBars: 2, maxSlipR: 0.20, convertOnExpiry: false }
+  entryChase = { enabled: true, afterBars: 2, maxSlipR: 0.20, convertOnExpiry: false },
+
+  // NEW: keep planned-R intact even if the entry slips (limit -> CE -> market)
+  reanchorStopOnFill = true,
+  // NEW: absolute safety valve against extreme slip (applies to ANY openFromPending call)
+  maxSlipROnFill = 0.40
 }) {
   const closed = [];
   let eq = equity;
@@ -167,11 +172,13 @@ export function backtest({
           const priceNow = c.close;
           const dir = pending.side === 'long' ? 1 : -1;
           const slippedR = Math.max(0, (dir === 1 ? (priceNow - pending.entry) : (pending.entry - priceNow))) / Math.max(1e-8, riskAtEdge);
-          if (slippedR <= (entryChase.maxSlipR ?? 0.2)) {
+
+          // GLOBAL SLIP GUARD
+          if (slippedR > (maxSlipROnFill ?? Infinity)) {
+            pending = null;
+          } else {
             const ok = openFromPending(priceNow, 'market');
             if (!ok) pending = null;
-          } else {
-            pending = null;
           }
         } else {
           pending = null;
@@ -183,16 +190,23 @@ export function backtest({
         } else if (entryChase?.enabled) {
           const elapsed = i - (pending.startedAtIndex ?? i);
           const mid = pending.meta?._imb?.mid;
+
           if (!pending._chasedCE && mid !== undefined && elapsed >= Math.max(1, entryChase.afterBars)) {
             pending.entry = mid;
             pending._chasedCE = true;
           }
+
           if (pending._chasedCE) {
             const riskRef = Math.abs((pending.meta?._initRisk) ?? (pending.entry - pending.stop));
             const priceNow = c.close;
             const dir = pending.side === 'long' ? 1 : -1;
             const slippedR = Math.max(0, (dir === 1 ? (priceNow - pending.entry) : (pending.entry - priceNow))) / Math.max(1e-8, riskRef);
-            if (slippedR > 0 && slippedR <= (entryChase.maxSlipR ?? 0.2)) {
+
+            // GLOBAL SLIP GUARD
+            if (slippedR > (maxSlipROnFill ?? Infinity)) {
+              // cancel rather than take a tiny-risk huge-R loss later
+              pending = null;
+            } else if (slippedR > 0 && slippedR <= (entryChase.maxSlipR ?? 0.2)) {
               const ok = openFromPending(priceNow, 'market');
               if (!ok) pending = null;
             }
@@ -283,7 +297,7 @@ export function backtest({
             open.entryFeeTotal = (open.entryFeeTotal || 0) + addFeeUnit * addQty;
             open.entryFill = ((open.entryFill * open.size) + (addFill * addQty)) / newSize;
             open.size = newSize;
-            open.initSize = (open.initSize || 0) + addQty;
+            open.initSize = (open.initSize ?? 0) + addQty;
             if (!open.baseSize) open.baseSize = base;
             open._adds = nextIdx;
             addedThisBar = true;
@@ -345,10 +359,10 @@ export function backtest({
         riskFrac: riskPct / 100,
         expiresAt: i + Math.max(1, expiryBars),
         startedAtIndex: i,
-        meta: sig
+        meta: sig,         // carry planned _initRisk for re-anchoring
+        plannedRiskAbs: Math.abs(sig._initRisk ?? (sig.entry - sig.stop))
       };
 
-      // if the current bar already touched our limit, treat as a limit fill
       if (touchedLimit(pending.side, pending.entry, c, trigModeFill)) {
         const ok = openFromPending(pending.entry, 'limit');
         if (!ok) pending = null;
@@ -357,10 +371,23 @@ export function backtest({
 
     // helper lives at end so it can see closures above
     function openFromPending(entryPx, kind = 'limit') {
+      // SLIP GUARD (applies to any open)
+      const plannedRisk = Math.max(1e-8, pending.plannedRiskAbs ?? Math.abs(pending.entry - pending.stop));
+      const slipAbs = Math.abs(entryPx - pending.entry);
+      const slipR = slipAbs / plannedRisk;
+      if (slipR > (maxSlipROnFill ?? Infinity)) return false;
+
+      // Optionally re-anchor stop so R doesn’t collapse/explode due to slip
+      let stopPx = pending.stop;
+      if (reanchorStopOnFill) {
+        const dir = pending.side === 'long' ? 1 : -1;
+        stopPx = (dir === 1) ? (entryPx - plannedRisk) : (entryPx + plannedRisk);
+      }
+
       const sizeRaw = positionSize({
         equity: eq,
         entry: entryPx,
-        stop: pending.stop,
+        stop: stopPx,
         riskFraction: pending.riskFrac,
         qtyStep, minQty, maxLeverage
       });
@@ -370,14 +397,14 @@ export function backtest({
       const { price: entryFill, fee: feeEntryUnit } = applyFill(entryPx, pending.side, { slippageBps, feeBps, kind });
       const entryFeeTotal = feeEntryUnit * size;
 
-      const initRiskNow = Math.abs(entryPx - pending.stop) || 1e-8;
+      const initRiskNow = Math.abs(entryPx - stopPx) || 1e-8;
 
       open = {
         symbol,
         ...pending.meta,
         side: pending.side,
         entry: entryPx,
-        stop: pending.stop,
+        stop: stopPx,
         takeProfit: pending.tp,
         size,
         openTime: c.time,

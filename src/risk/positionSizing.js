@@ -3,8 +3,8 @@ export function positionSize({
   equity,
   entry,
   stop,
-  riskFraction = 0.01,    // e.g., 1% per trade
-  qtyStep = 0.001,        // BTC min lot for backtests
+  riskFraction = 0.01,   
+  qtyStep = 0.001,     
   minQty = 0.001,
   maxLeverage = 2.0       // cap notional <= equity * maxLeverage
 }) {

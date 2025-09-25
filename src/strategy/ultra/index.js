@@ -1,20 +1,23 @@
 // src/strategy/ultra/index.js
-import { ema, atr } from '../../utils/indicators.js';
-import { minutesET } from '../../utils/time.js';
-import { createLogger } from '../../utils/logger.js';
+import { ema, atr } from "../../utils/indicators.js";
+import { minutesET } from "../../utils/time.js";
+import { createLogger } from "../../utils/logger.js";
 
-import { relBps, mid, parseWindowsCSV, inWindowsET } from './core/utils.js';
-import { presetDefaults } from './core/presets.js';
-import { recentImbalance } from './core/fvg.js';
-import { recentSwing, microBOS, detectSweep } from './core/swings.js';
-import { computeDayRangeET, computeAsianRangeTodayET } from './core/ranges.js';
-import { chooseDailyBias } from './core/bias.js';
-import { DBG, rej, bindExitLog } from './core/dbg.js';
+import { relBps, mid, parseWindowsCSV, inWindowsET } from "./core/utils.js";
+import { presetDefaults } from "./core/presets.js";
+import { recentImbalance } from "./core/fvg.js";
+import { recentSwing, microBOS, detectSweep } from "./core/swings.js";
+import {
+  computeDayRangeET,
+  computeAsianRangeTodayET,
+  computeSessionRangesTodayET,
+} from "./core/ranges.js";
+import { chooseDailyBias } from "./core/bias.js";
+import { DBG, rej, bindExitLog } from "./core/dbg.js";
 
 export function ultraSignalFactory(opts = {}) {
   const {
-    // generic knobs (may be overridden by preset)
-    preset = 'standard',
+    preset = "standard",
     debug = false,
 
     useSessionWindows,
@@ -38,18 +41,30 @@ export function ultraSignalFactory(opts = {}) {
     oteLo,
     oteHi,
 
-    bias = { enabled: true, gate: 'strict', emaPeriod: 50, slopeBps: 1, htf4h: 240, htf1h: 60, fallback15m: 15, bandBps: 8 },
+    bias = {
+      enabled: true,
+      gate: "strict",
+      emaPeriod: 50,
+      slopeBps: 1,
+      htf4h: 240,
+      htf1h: 60,
+      fallback15m: 15,
+      bandBps: 8,
+    },
     allowStrongSetupOverNeutralBias,
 
-    confluence = { minScore: 3, sweepPts: 1, imbPts: 1, bosPts: 1, pdPts: 0, otePts: 1, htfPts: 1 },
+    confluence = {
+      minScore: 3,
+      sweepPts: 1,
+      imbPts: 1,
+      bosPts: 1,
+      pdPts: 0,
+      otePts: 1,
+      htfPts: 1,
+    },
 
-    /**
-     * entryMode:
-     *  - 'edge'  : use FVG edge (bottom for longs, top for shorts)
-     *  - 'ce'    : use FVG mid (consequent encroachment)
-     *  - 'adaptive' : ladder within the FVG (edge->toward mid) using wick strength
-     */
-    entryMode = 'edge',
+    // entry behavior
+    entryMode = "edge",
     rr = 1.9,
     atrPeriod = 14,
     atrMult = 1.0,
@@ -59,124 +74,194 @@ export function ultraSignalFactory(opts = {}) {
     cooldownBars = 4,
     entryExpiryBars = 5,
 
-    // wick rejection filter
+    // TP logic
+    tpMode, // 'rr' | 'key' | 'hybrid'
+    rrMinForKey,
+
+    // wick rejection
     wickRejection = {
       enabled: false,
-      /** min wick size vs ATR to count as a rejection */
-      minWickAtr: 0.40,
-      /** require the wick to pierce beyond the relevant FVG edge and close back inside */
+      minWickAtr: 0.4,
       requirePierce: true,
-      /** require candle body direction to align with trade side */
-      requireBodyDir: true
+      requireBodyDir: true,
     },
 
-    // controls how far from the edge we place the limit when entryMode='adaptive'
-    entryAdaptive = {
-      /** base penetration (0=edge, 1=mid). will be increased if wick is weak */
-      penBase: 0.35,
-      /** extra penetration to apply when wick is weak */
-      penWeakAdd: 0.25,
-      /** cap penetration */
-      penMax: 0.70
-    },
+    // adaptive entry tuning
+    entryAdaptive = { penBase: 0.35, penWeakAdd: 0.25, penMax: 0.7 },
 
-    log = { enabled: false, level: 'info', json: true, basename: undefined },
+    // sessions
+    sessionLevels = [
+      { name: "Asia", startMin: 0, endMin: 5 * 60 },
+      { name: "London", startMin: 8 * 60, endMin: 13 * 60 },
+      { name: "NewYork", startMin: 13 * 60, endMin: 21 * 60 },
+    ],
+
+    log = { enabled: false, level: "info", json: true, basename: undefined },
 
     fvgMinBps,
     minBodyAtr,
-    needFvgAtr
+    needFvgAtr,
+
+    // NEW knobs
+    allowImbalanceFallbackOnNeutral = true,
+    microBosLookback = 32,
+    microBosLookbackNosweep = 42,
+
+    // NEW: spacing between accepted signals
+    minGapBarsBetweenSignals: _minGapBarsBetweenSignals = 4,
+
+    requireSweepMode = "prefer" //  force | prefer
+
   } = opts;
+
+  let _lastSignalBarIdx = -Infinity;
 
   DBG.on = !!debug;
   bindExitLog();
 
-  // --- Merge preset defaults comprehensively ---
+  // ---- preset merge
   const P = presetDefaults(preset);
 
-  const _useSessionWindows = (useSessionWindows !== undefined) ? useSessionWindows : (P.useSessionWindows ?? false);
-  const _killzones = (killzones !== undefined) ? killzones : (P.killzones ?? "08:30-11:30,13:30-15:30");
+  const _useSessionWindows =
+    useSessionWindows !== undefined
+      ? useSessionWindows
+      : P.useSessionWindows ?? false;
 
-  const _imbalanceLookback = (imbalanceLookback !== undefined) ? imbalanceLookback : (P.imbalanceLookback ?? 20);
-  const _sweepTolBps       = (sweepTolBps !== undefined) ? sweepTolBps : (P.sweepTolBps ?? 3);
-  const _minAtrBps         = (minAtrBps !== undefined) ? minAtrBps : (P.minAtrBps ?? 3);
+  const _killzones =
+    killzones !== undefined
+      ? killzones
+      : P.killzones ?? "08:30-11:30,13:30-15:30";
 
-  const _fvgMinBps   = (fvgMinBps !== undefined) ? fvgMinBps : (P.fvgMinBps ?? 2.0);
-  const _needFvgAtr  = (needFvgAtr !== undefined) ? needFvgAtr : (P.needFvgAtr ?? 0.85);
-  const _minBodyAtr  = (minBodyAtr !== undefined) ? minBodyAtr : (P.minBodyAtr ?? 0.30);
+  const _imbalanceLookback =
+    imbalanceLookback !== undefined
+      ? imbalanceLookback
+      : P.imbalanceLookback ?? 20;
 
-  const _requireMicroBOS = (requireMicroBOS !== undefined) ? requireMicroBOS : (P.requireMicroBOS ?? true);
-  const _requireSweep    = (requireSweep !== undefined) ? requireSweep : (P.requireSweep ?? true);
+  const _sweepTolBps =
+    sweepTolBps !== undefined ? sweepTolBps : P.sweepTolBps ?? 3;
+  const _minAtrBps = minAtrBps !== undefined ? minAtrBps : P.minAtrBps ?? 3;
 
-  const _allowStrong = (allowStrongSetupOverNeutralBias !== undefined)
-    ? allowStrongSetupOverNeutralBias
-    : (P.allowStrongSetupOverNeutralBias ?? true);
+  const _fvgMinBps = fvgMinBps !== undefined ? fvgMinBps : P.fvgMinBps ?? 2.0;
+  const _needFvgAtr =
+    needFvgAtr !== undefined ? needFvgAtr : P.needFvgAtr ?? 0.85;
+  const _minBodyAtr =
+    minBodyAtr !== undefined ? minBodyAtr : P.minBodyAtr ?? 0.3;
 
-  const _usePD  = (usePD  !== undefined) ? usePD  : (P.usePD  ?? true);
-  const _useOTE = (useOTE !== undefined) ? useOTE : (P.useOTE ?? true);
+  const _requireMicroBOS =
+    requireMicroBOS !== undefined ? requireMicroBOS : P.requireMicroBOS ?? true;
 
-  const _pdToleranceBps = (pdToleranceBps !== undefined) ? pdToleranceBps : (P.pdToleranceBps ?? 30);
-  const _oteLo = (oteLo !== undefined) ? oteLo : (P.oteLo ?? 0.62);
-  const _oteHi = (oteHi !== undefined) ? oteHi : (P.oteHi ?? 0.79);
+  const _requireSweep =
+    requireSweep !== undefined ? requireSweep : P.requireSweep ?? true;
+
+  const _allowStrong =
+    allowStrongSetupOverNeutralBias !== undefined
+      ? allowStrongSetupOverNeutralBias
+      : P.allowStrongSetupOverNeutralBias ?? true;
+
+  const _usePD = usePD !== undefined ? usePD : P.usePD ?? true;
+  const _useOTE = useOTE !== undefined ? useOTE : P.useOTE ?? true;
+
+  const _pdToleranceBps =
+    pdToleranceBps !== undefined ? pdToleranceBps : P.pdToleranceBps ?? 36;
+
+  const _oteLo = oteLo !== undefined ? oteLo : P.oteLo ?? 0.6;
+  const _oteHi = oteHi !== undefined ? oteHi : P.oteHi ?? 0.8;
+
+  const _tpMode = tpMode !== undefined ? tpMode : P.tpMode ?? "hybrid";
+  const _rrMinForKey =
+    rrMinForKey !== undefined ? rrMinForKey : P.rrMinForKey ?? 1.2;
 
   const logger = createLogger({
     enabled: !!(debug || log?.enabled),
-    level: log?.level ?? 'info',
+    level: log?.level ?? "info",
     json: log?.json ?? true,
-    basename: log?.basename
+    basename: log?.basename,
   });
 
   const windows = parseWindowsCSV(_killzones);
 
-  // --- helpers ---
-  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+  // --- helpers
+  function clamp01(x) {
+    return Math.max(0, Math.min(1, x));
+  }
 
   function wickRejectOK(side, imb, bar, atrVal, cfg) {
-    if (!cfg?.enabled || !bar || !Number.isFinite(atrVal) || atrVal <= 0) return true;
+    if (!cfg?.enabled || !bar || !Number.isFinite(atrVal) || atrVal <= 0)
+      return true;
     const bodyUp = bar.close >= bar.open;
     const bodyDn = bar.close <= bar.open;
     const upperWick = Math.max(0, bar.high - Math.max(bar.open, bar.close));
     const lowerWick = Math.max(0, Math.min(bar.open, bar.close) - bar.low);
-    const wick = (side === 'long') ? lowerWick : upperWick;
+    const wick = side === "long" ? lowerWick : upperWick;
     const wickATR = wick / Math.max(1e-12, atrVal);
 
     let pierceOK = true;
     if (cfg.requirePierce) {
-      if (side === 'long') pierceOK = (bar.low <= imb.bottom) && (bar.close >= imb.bottom);
-      else pierceOK = (bar.high >= imb.top) && (bar.close <= imb.top);
+      if (side === "long")
+        pierceOK = bar.low <= imb.bottom && bar.close >= imb.bottom;
+      else pierceOK = bar.high >= imb.top && bar.close <= imb.top;
     }
 
     let bodyOK = true;
-    if (cfg.requireBodyDir) bodyOK = (side === 'long') ? bodyUp : bodyDn;
+    if (cfg.requireBodyDir) bodyOK = side === "long" ? bodyUp : bodyDn;
 
-    return (wickATR >= (cfg.minWickAtr ?? 0.40)) && pierceOK && bodyOK;
+    return wickATR >= (cfg.minWickAtr ?? 0.4) && pierceOK && bodyOK;
   }
 
   function chooseEntryPrice(side, imb, mode, atrVal, lastBar) {
-  if (mode === 'ce') return imb.mid;
-  if (mode === 'edge') return side === 'long' ? imb.bottom : imb.top;
-  if (mode === 'adaptive') {
-    // base penetration toward CE; adjust by wick strength
-    const cfg = entryAdaptive || {};
-    const penBase = clamp01(cfg.penBase ?? 0.35);
-    const penWeakAdd = clamp01(cfg.penWeakAdd ?? 0.25);
-    const penMax = clamp01(cfg.penMax ?? 0.7);
-
-    // use the provided lastBar instead of referencing an out-of-scope `bars`
-    const wickOK = wickRejectOK(side, imb, lastBar, atrVal, wickRejection);
-    const pen = wickOK ? penBase : Math.min(penMax, penBase + penWeakAdd);
-
-    if (side === 'long') {
-      // from bottom (edge) toward mid
-      return imb.bottom + pen * (imb.mid - imb.bottom);
-    } else {
-      // from top (edge) toward mid
+    if (mode === "ce") return imb.mid;
+    if (mode === "edge") return side === "long" ? imb.bottom : imb.top;
+    if (mode === "adaptive") {
+      const cfg = entryAdaptive || {};
+      const penBase = clamp01(cfg.penBase ?? 0.35);
+      const penWeakAdd = clamp01(cfg.penWeakAdd ?? 0.25);
+      const penMax = clamp01(cfg.penMax ?? 0.7);
+      const wickOK = wickRejectOK(side, imb, lastBar, atrVal, wickRejection);
+      const pen = wickOK ? penBase : Math.min(penMax, penBase + penWeakAdd);
+      if (side === "long") return imb.bottom + pen * (imb.mid - imb.bottom);
       return imb.top - pen * (imb.top - imb.mid);
     }
+    return imb.mid;
   }
-  // fallback
-  return imb.mid;
-}
 
+  function nearestOppositeKeyTP(side, entryPx, context, fallbackAbs) {
+    const wantAbove = side === "long";
+    const cands = [];
+
+    if (context.prevDay?.hi) cands.push({ p: context.prevDay.hi, tag: "PDH" });
+    if (context.prevDay?.lo) cands.push({ p: context.prevDay.lo, tag: "PDL" });
+    if (context.asian?.hi) cands.push({ p: context.asian.hi, tag: "ASH" });
+    if (context.asian?.lo) cands.push({ p: context.asian.lo, tag: "ASL" });
+
+    for (const s of context.sessions || []) {
+      if (Number.isFinite(s.hi)) cands.push({ p: s.hi, tag: `${s.name}H` });
+      if (Number.isFinite(s.lo)) cands.push({ p: s.lo, tag: `${s.name}L` });
+    }
+
+    const swHi = recentSwing(context.bars, context.idx, "down", 40);
+    const swLo = recentSwing(context.bars, context.idx, "up", 40);
+    if (swHi) cands.push({ p: swHi.price, tag: "swingHi" });
+    if (swLo) cands.push({ p: swLo.price, tag: "swingLo" });
+
+    const filtered = cands.filter((c) =>
+      wantAbove ? c.p > entryPx : c.p < entryPx
+    );
+    if (!filtered.length) {
+      return {
+        tp: wantAbove ? entryPx + fallbackAbs : entryPx - fallbackAbs,
+        tag: "rrFallback",
+      };
+    }
+
+    const picked = filtered.reduce((best, cur) => {
+      if (!best) return cur;
+      const dBest = Math.abs(best.p - entryPx);
+      const dCur = Math.abs(cur.p - entryPx);
+      return dCur < dBest ? cur : best;
+    }, null);
+
+    return { tp: picked.p, tag: picked.tag };
+  }
 
   const api = ({ candles }) => {
     const bars = candles;
@@ -184,155 +269,311 @@ export function ultraSignalFactory(opts = {}) {
     DBG.barsSeen++;
     const now = bars[i]?.time ?? Date.now();
 
-    if (i < Math.max(lookback, 200)) { rej('earlyWarmup'); return null; }
+    if (i < Math.max(lookback, 200)) {
+      rej("earlyWarmup");
+      return null;
+    }
 
-    // --- time/session fences ---
+    // enforce minimum gap between signals
+    if (i - _lastSignalBarIdx < Math.max(0, _minGapBarsBetweenSignals)) {
+      rej("signalSpacing");
+      return null;
+    }
+
+    // session/time fences
     const m = minutesET(now);
     if (cashSessionGuard) {
-      const openET = 9 * 60 + 30, closeET = 16 * 60;
-      if (!(m >= openET + firstMinGuard && m <= closeET - lastMinGuard)) { rej('timeFence'); return null; }
+      const openET = 9 * 60 + 30,
+        closeET = 16 * 60;
+      if (!(m >= openET + firstMinGuard && m <= closeET - lastMinGuard)) {
+        rej("timeFence");
+        return null;
+      }
     } else {
-      if (!(m >= firstMinGuard && m <= (24 * 60 - lastMinGuard))) { rej('timeFence'); return null; }
+      if (!(m >= firstMinGuard && m <= 24 * 60 - lastMinGuard)) {
+        rej("timeFence");
+        return null;
+      }
     }
-    if (_useSessionWindows && !inWindowsET(now, windows)) { rej('windowFence'); return null; }
+    if (_useSessionWindows && !inWindowsET(now, windows)) {
+      rej("windowFence");
+      return null;
+    }
 
-    // --- bias ---
+    // bias
     const dBias = bias?.enabled ? chooseDailyBias(bars, bias) : 0;
-    if (bias?.enabled && bias.gate === 'strict' && dBias === 0 && !_allowStrong) { rej('biasNeutralStrict'); return null; }
+    if (
+      bias?.enabled &&
+      bias.gate === "strict" &&
+      dBias === 0 &&
+      !_allowStrong
+    ) {
+      rej("biasNeutralStrict");
+      return null;
+    }
 
-    // --- daily ranges (Asia + prev day) ---
+    // ranges & ATR
     const asian = computeAsianRangeTodayET(bars, i, 0, 5 * 60);
     const prevDay = computeDayRangeET(bars, i, -1);
+    const sessions = computeSessionRangesTodayET(bars, i, sessionLevels);
 
-    // --- volatility / ATR ---
     const A = atr(bars, Math.max(5, atrPeriod));
     const curATR = A[i];
     const price = bars[i].close;
-    if (curATR === undefined) { rej('atrTooSmall'); return null; }
-    const atrBps = relBps(curATR, price);
-    if (atrBps < _minAtrBps) { rej('atrTooSmall'); return null; }
-
-    // --- sweep requirement (optional) ---
-    let sw = detectSweep(bars, i, { asian, prevDay, tolBps: _sweepTolBps, swingFallbackLookback: 30 });
-    if (!sw && !_requireSweep) {
-      const db = bias?.enabled ? dBias : 0;
-      if (db !== 0) sw = { side: db > 0 ? 'long' : 'short', ref: bars[i].close, kind: 'nosweep' };
+    if (curATR === undefined) {
+      rej("atrTooSmall");
+      return null;
     }
-    if (!sw) { rej('noSweep'); return null; }
+    const atrBps = relBps(curATR, price);
+    if (atrBps < _minAtrBps) {
+      rej("atrTooSmall");
+      return null;
+    }
 
-    // --- imbalance (FVG/IFVG) ---
+    // imbalance
     const imb = recentImbalance(bars, i, _imbalanceLookback, preferIFVG);
-    if (!imb) { rej('noImbalance'); return null; }
-    if ((sw.side === 'long' && imb.type !== 'bull') || (sw.side === 'short' && imb.type !== 'bear')) { rej('noImbalance'); return null; }
+    if (!imb) {
+      rej("noImbalance");
+      return null;
+    }
 
-    // size/quality of imbalance and bar body
+    // FVG/body quality
     const body = Math.abs(bars[i].close - bars[i].open);
     const bodyAtr = body / Math.max(1e-12, curATR);
     const imbSize = Math.abs(imb.top - imb.bottom);
     const imbBps = relBps(imbSize, price);
     const fvgAtr = imbSize / Math.max(1e-12, curATR);
-    if (imbBps < _fvgMinBps || bodyAtr < _minBodyAtr || fvgAtr < _needFvgAtr) { rej('fvgTooSmall'); return null; }
-
-    // wick rejection (optional, acts as quality gate)
-    if (!wickRejectOK(sw.side, imb, bars[i], curATR, wickRejection)) { rej('wickFail'); return null; }
-
-    // micro BOS (optional per preset)
-    if (_requireMicroBOS) {
-      const dir = sw.side === 'long' ? 'up' : 'down';
-      if (!microBOS(bars, i, dir, 30, 'wick')) { rej('microBosFail'); return null; }
+    if (imbBps < _fvgMinBps || bodyAtr < _minBodyAtr || fvgAtr < _needFvgAtr) {
+      rej("fvgTooSmall");
+      return null;
     }
 
-    // PD fence (optional)
+    let sw = detectSweep(bars, i, {
+      asian,
+      prevDay,
+      extraLevels: sessions,
+      tolBps: _sweepTolBps,
+      swingFallbackLookback: 30,
+    });
+
+    let biasAgree =
+      (dBias > 0 && sw?.side === "long") || (dBias < 0 && sw?.side === "short");
+
+    // If sweep missing, allow nosweep ONLY in "prefer" mode AND with bias alignment
+    if (!sw && requireSweepMode === "prefer") {
+      if (dBias !== 0) {
+        sw = {
+          side: dBias > 0 ? "long" : "short",
+          ref: bars[i].close,
+          kind: "nosweep",
+        };
+      }
+    }
+
+    // If sweep required strictly, or nosweep without bias, reject
+    if (!sw || (sw.kind === "nosweep" && requireSweep === true && !biasAgree)) {
+      rej("noSweep");
+      return null;
+    }
+
+    // align direction with imbalance
+    if (
+      (sw.side === "long" && imb.type !== "bull") ||
+      (sw.side === "short" && imb.type !== "bear")
+    ) {
+      rej("noImbalance");
+      return null;
+    }
+
+    // wick quality gate
+    if (!wickRejectOK(sw.side, imb, bars[i], curATR, wickRejection)) {
+      rej("wickFail");
+      return null;
+    }
+
+    // --- structural confirmation (BOS)
+    // Determine whether BOS is required (nosweep fallback) and whether it passed
+    let bosOK = true;
+    const mustHaveBOS =
+      _requireMicroBOS ||
+      (sw.kind === "nosweep" && requireSweepMode === "prefer");
+
+    if (mustHaveBOS) {
+      const dir = sw.side === "long" ? "up" : "down";
+      const look =
+        sw.kind === "nosweep"
+          ? microBosLookbackNosweep || 42
+          : microBosLookback || 32;
+      bosOK = microBOS(bars, i, dir, look, "wick");
+      if (!bosOK) {
+        rej("microBosFail");
+        return null;
+      }
+    }
+
+    // --- PD (optional)
     if (_usePD && prevDay) {
       const tolAbs = price * (_pdToleranceBps / 10000);
-      const lo = prevDay.lo - tolAbs;
-      const hi = prevDay.hi + tolAbs;
-      const priceOK = (price >= lo && price <= hi);
-      const midOK = imb ? (imb.mid >= lo && imb.mid <= hi) : false;
-      if (!(priceOK || midOK)) { rej('pdFail'); return null; }
-    }
-
-    // OTE zone (optional)
-    if (_useOTE && imb) {
-      const ph = recentSwing(bars, i, 'down', 30);
-      const pl = recentSwing(bars, i, 'up', 30);
-      let oteOK = true;
-      if (sw.side === 'long' && ph && pl && ph.price > pl.price) {
-        const range = ph.price - pl.price;
-        const z1 = ph.price - range * _oteHi;
-        const z2 = ph.price - range * _oteLo;
-        const loZ = Math.min(z1, z2), hiZ = Math.max(z1, z2);
-        oteOK = (imb.mid >= loZ && imb.mid <= hiZ);
-      } else if (sw.side === 'short' && ph && pl && ph.price > pl.price) {
-        const range = ph.price - pl.price;
-        const z1 = pl.price + range * _oteLo;
-        const z2 = pl.price + range * _oteHi;
-        const loZ = Math.min(z1, z2), hiZ = Math.max(z1, z2);
-        oteOK = (imb.mid >= loZ && imb.mid <= hiZ);
+      const lo = prevDay.lo - tolAbs,
+        hi = prevDay.hi + tolAbs;
+      const priceOK = price >= lo && price <= hi;
+      const midOK = imb ? imb.mid >= lo && imb.mid <= hi : false;
+      if (!(priceOK || midOK)) {
+        rej("pdFail");
+        return null;
       }
-      if (!oteOK) { rej('oteFail'); return null; }
     }
 
-    // optional 'confluence' scoring (light—keeps current gates)
+    // ---- OTE as SOFT signal only (no rejection)
+    let otePass = true;
+    if (_useOTE && imb) {
+      const ph = recentSwing(bars, i, "down", 30);
+      const pl = recentSwing(bars, i, "up", 30);
+      if (ph && pl && ph.price > pl.price) {
+        if (sw.side === "long") {
+          const range = ph.price - pl.price;
+          const z1 = ph.price - range * _oteHi,
+            z2 = ph.price - range * _oteLo;
+          const loZ = Math.min(z1, z2),
+            hiZ = Math.max(z1, z2);
+          otePass = imb.mid >= loZ && imb.mid <= hiZ;
+        } else {
+          const range = ph.price - pl.price;
+          const z1 = pl.price + range * _oteLo,
+            z2 = pl.price + range * _oteHi;
+          const loZ = Math.min(z1, z2),
+            hiZ = Math.max(z1, z2);
+          otePass = imb.mid >= loZ && imb.mid <= hiZ;
+        }
+      }
+    }
+
+    // Extra guard: if HTF bias is neutral, require OTE alignment
+    if (bias?.enabled && dBias === 0 && _useOTE && !otePass) {
+      rej("oteFailNeutral");
+      return null;
+    }
+
+    // If sweep came from Asia session, require HTF agreement
+    if (sw?.kind === "asia" && !((dBias > 0 && sw.side === "long") 
+      || (dBias < 0 && sw.side === "short"))) {
+      rej("asiaNoBias");
+      return null;
+    }
+
+    // ---- confluence score (add BOS point if bosOK, regardless of _requireMicroBOS)
     let score = 0;
     if (sw) score += confluence.sweepPts ?? 0;
     if (imb) score += confluence.imbPts ?? 0;
-    if (_requireMicroBOS) score += confluence.bosPts ?? 0; // only if checked
+    if (bosOK) score += confluence.bosPts ?? 0; // <-- key change
     if (_usePD) score += confluence.pdPts ?? 0;
-    if (_useOTE) score += confluence.otePts ?? 0;
-    const biasAgree = (dBias > 0 && sw.side === 'long') || (dBias < 0 && sw.side === 'short');
+    if (_useOTE && otePass) score += confluence.otePts ?? 0;
+    biasAgree =
+      (dBias > 0 && sw.side === "long") || (dBias < 0 && sw.side === "short");
     if (bias?.enabled && biasAgree) score += confluence.htfPts ?? 0;
 
-    if ((confluence.minScore ?? 0) > 0 && score < confluence.minScore) { rej('scoreFail'); return null; }
+    if ((confluence.minScore ?? 0) > 0 && score < confluence.minScore) {
+      rej("scoreFail");
+      return null;
+    }
 
-    // --- entry/stop/tp with min stop bps enforcement ---
-    const entryEdge = chooseEntryPrice(sw.side, imb, entryMode, curATR, bars[i]);
+    // entry/stop
+    const entryEdge = chooseEntryPrice(
+      sw.side,
+      imb,
+      entryMode,
+      curATR,
+      bars[i]
+    );
 
-    let stopRaw = sw.side === 'long'
-      ? (imb.bottom - atrMult * curATR)
-      : (imb.top    + atrMult * curATR);
+    let stopRaw =
+      sw.side === "long"
+        ? imb.bottom - atrMult * curATR
+        : imb.top + atrMult * curATR;
 
     const stopBps = relBps(Math.abs(entryEdge - stopRaw), price);
     if (stopBps < (minStopBps ?? 0)) {
       const want = (minStopBps / 10000) * price;
-      stopRaw = (sw.side === 'long') ? (entryEdge - want) : (entryEdge + want);
+      stopRaw = sw.side === "long" ? entryEdge - want : entryEdge + want;
     }
 
-    const takeProfit = sw.side === 'long'
-      ? (entryEdge + rr * Math.abs(entryEdge - stopRaw))
-      : (entryEdge - rr * Math.abs(entryEdge - stopRaw));
+    const riskAbs = Math.abs(entryEdge - stopRaw);
+
+    // TP: key vs RR
+    let takeProfit, tpTag, rrTP;
+    if ((_tpMode ?? "hybrid") === "rr") {
+      takeProfit =
+        sw.side === "long"
+          ? entryEdge + rr * riskAbs
+          : entryEdge - rr * riskAbs;
+      tpTag = "rr";
+      rrTP = rr;
+    } else {
+      const { tp, tag } = nearestOppositeKeyTP(
+        sw.side,
+        entryEdge,
+        { asian, prevDay, sessions, bars, idx: i },
+        rr * riskAbs
+      );
+      const rrToKey = Math.abs(tp - entryEdge) / Math.max(1e-12, riskAbs);
+      const useKey =
+        _tpMode === "key" ||
+        ((_tpMode ?? "hybrid") === "hybrid" && rrToKey >= (rrMinForKey ?? 1.2));
+      if (useKey) {
+        takeProfit = tp;
+        tpTag = tag;
+        rrTP = rrToKey;
+      } else {
+        takeProfit =
+          sw.side === "long"
+            ? entryEdge + rr * riskAbs
+            : entryEdge - rr * riskAbs;
+        tpTag = "rrFallback";
+        rrTP = rr;
+      }
+    }
 
     if (DBG) DBG.accepted = (DBG.accepted || 0) + 1;
 
-    // optional file logger line for visibility
     if (logger.on) {
       logger.info({
         t: new Date(now).toISOString(),
-        msg: 'signal',
+        msg: "signal",
         side: sw.side,
         entry: entryEdge,
         stop: stopRaw,
         tp: takeProfit,
         gates: {
-          bias: dBias, atrBps, sweep: sw?.kind ?? null, fvgBps: imbBps,
-          bodyAtr, fvgAtr, pd: _usePD, ote: _useOTE, score,
-          wickRej: wickRejection?.enabled ?? false
-        }
+          bias: dBias,
+          atrBps,
+          sweep: sw?.kind ?? null,
+          fvgBps: relBps(Math.abs(imb.top - imb.bottom), price),
+          bodyAtr,
+          fvgAtr,
+          pd: _usePD,
+          ote: _useOTE ? otePass : null,
+          score,
+          wickRej: wickRejection?.enabled ?? false,
+          tpKind: tpTag,
+          tpRR: rrTP,
+        },
       });
     }
+
+    _lastSignalBarIdx = i;
 
     return {
       side: sw.side,
       entry: entryEdge,
       stop: stopRaw,
       takeProfit,
-      _initRisk: Math.abs(entryEdge - stopRaw),
+      _initRisk: riskAbs,
       _rr: rr,
       _entryExpiryBars: entryExpiryBars,
       _imb: imb,
       _breakevenAtR: breakevenAtR,
       _trailAfterR: trailAfterR,
-      _cooldownBars: cooldownBars
+      _cooldownBars: cooldownBars,
     };
   };
 
