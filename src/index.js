@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 
 // ---------------- utils ----------------
 function loadConfig() {
-  const p = path.join(__dirname, "..", "config.json");
+  const p = path.join(__dirname, "..", "config", "config.json");
   if (!fs.existsSync(p))
     throw new Error("Create config.json (see config.example.json)");
   return JSON.parse(fs.readFileSync(p, "utf8"));
