@@ -1,0 +1,146 @@
+{
+  "mode": "backtest",
+  "symbol": "BTC-USD",
+  "interval": "5m",
+  "period": "60d",
+
+  "equity": 10000,
+  "riskPct": 0.20,
+  "rr": 1.8,
+
+  "slippageBps": 2,
+  "feeBps": 0,
+
+  "report": { "exportCsv": true, "outDir": "output" },
+
+  "oco": {
+    "mode": "intrabar",
+    "tieBreak": "pessimistic",
+    "clampStops": true,
+    "clampEpsBps": 0.25
+  },
+  "triggerMode": "intrabar",
+  "flattenAtClose": false,
+
+  "scaleOutAtR": 1.0,
+  "scaleOutFrac": 0.5,
+  "finalTP_R": 3.0,
+
+  "maxDailyLossPct": 1.0,
+
+  "atrTrailMult": 0.0,
+  "atrTrailPeriod": 14,
+
+  "mfeTrail": { "enabled": true, "armR": 1.6, "givebackR": 0.6 },
+
+  "pyramiding": { "enabled": false },
+
+  "volScale": {
+    "enabled": true,
+    "atrPeriod": 14,
+    "cutIfAtrX": 1.45,
+    "cutFrac": 0.33,
+    "noCutAboveR": 2.2
+  },
+
+  "backtest": {
+    "dailyMaxTrades": 8,
+    "postLossCooldownBars": 12,
+    "entryChase": {
+      "enabled": true,
+      "afterBars": 1,
+      "maxSlipR": 0.12,
+      "convertOnExpiry": false
+    }
+  },
+
+  "position": { "qtyStep": 0.001, "minQty": 0.001, "maxLeverage": 2.0 },
+  "maxConcurrentTrades": 1,
+
+  "broker": {
+    "maxHoldMinLive": null,
+    "flattenWeekends": false,
+    "flattenFridayHourUTC": 21
+  },
+
+  "strategy": "ultra",
+
+  "ultra": {
+    "preset": "crypto",
+    "debug": false,
+
+    "useSessionWindows": true,
+    "killzones": "07:00-10:30,13:00-16:00,19:00-22:00",
+    "firstMinGuard": 1,
+    "lastMinGuard": 1,
+
+    "lookback": 250,
+    "imbalanceLookback": 30,
+    "sweepTolBps": 3.0,
+    "minAtrBps": 5.6,
+    "pdToleranceBps": 60,
+
+    "preferIFVG": true,
+    "requireMicroBOS": true,
+    "requireSweep": true,
+    "requireSweepMode": "prefer",
+
+    "usePD": false,
+    "useOTE": false,
+
+    "bias": {
+      "enabled": true,
+      "gate": "strict",
+      "emaPeriod": 50,
+      "slopeBps": 0.6,
+      "htf4h": 240,
+      "htf1h": 60,
+      "fallback15m": 15,
+      "bandBps": 6.0
+    },
+    "allowStrongSetupOverNeutralBias": true,
+
+    "confluence": {
+      "minScore": 3,
+      "sweepPts": 1,
+      "imbPts": 1,
+      "bosPts": 1,
+      "htfPts": 1,
+      "pdPts": 0,
+      "otePts": 0
+    },
+
+    "entryMode": "edge",
+    "entryExpiryBars": 6,
+    "rr": 2.0,
+    "atrPeriod": 14,
+    "atrMult": 1.6,
+    "minStopBps": 10,
+    "breakevenAtR": 0.8,
+    "trailAfterR": 1.8,
+    "cooldownBars": 8,
+
+    "wickRejection": { "enabled": false },
+
+    "fvgMinBps": 8.0,
+    "minBodyAtr": 0.9,
+    "needFvgAtr": 0.9,
+
+    "tpMode": "hybrid",
+    "rrMinForKey": 1.2,
+
+    "sessionLevels": [
+      { "name": "Asia", "startMin": 0, "endMin": 300 },
+      { "name": "London", "startMin": 480, "endMin": 780 },
+      { "name": "NewYork", "startMin": 780, "endMin": 1260 }
+    ],
+
+    "allowImbalanceFallbackOnNeutral": true,
+    "microBosLookback": 32,
+    "microBosLookbackNosweep": 42,
+    "minGapBarsBetweenSignals": 3
+  },
+
+  "reanchorStopOnFill": true,
+  "maxSlipROnFill": 0.25
+}
