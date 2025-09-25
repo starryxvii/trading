@@ -1,4 +1,4 @@
-// src/strategy/ultra/core/fvg.js
+// src/strat/core/fvg.js
 import { mid } from './utils.js';
 
 export function fvgAt(bars,i){

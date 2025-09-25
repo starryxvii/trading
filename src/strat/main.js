@@ -1,7 +1,7 @@
-// src/strategy/ultra/index.js
-import { ema, atr } from "../../utils/indicators.js";
-import { minutesET } from "../../utils/time.js";
-import { createLogger } from "../../utils/logger.js";
+// src/strat/main.js
+import { ema, atr } from "../utils/indicators.js";
+import { minutesET } from "../utils/time.js";
+import { createLogger } from "../utils/logger.js";
 
 import { relBps, mid, parseWindowsCSV, inWindowsET } from "./core/utils.js";
 import { presetDefaults } from "./core/presets.js";
@@ -15,7 +15,8 @@ import {
 import { chooseDailyBias } from "./core/bias.js";
 import { DBG, rej, bindExitLog } from "./core/dbg.js";
 
-export function ultraSignalFactory(opts = {}) {
+export function signalFactory(opts = {}) {
+  // ---------- defaults & options merge ----------
   const {
     preset = "standard",
     debug = false,
@@ -102,16 +103,15 @@ export function ultraSignalFactory(opts = {}) {
     minBodyAtr,
     needFvgAtr,
 
-    // NEW knobs
+    // knobs
     allowImbalanceFallbackOnNeutral = true,
     microBosLookback = 32,
     microBosLookbackNosweep = 42,
 
-    // NEW: spacing between accepted signals
+    // signal spacing
     minGapBarsBetweenSignals: _minGapBarsBetweenSignals = 4,
 
-    requireSweepMode = "prefer" //  force | prefer
-
+    requireSweepMode = "prefer", // 'force' | 'prefer'
   } = opts;
 
   let _lastSignalBarIdx = -Infinity;
@@ -119,57 +119,27 @@ export function ultraSignalFactory(opts = {}) {
   DBG.on = !!debug;
   bindExitLog();
 
-  // ---- preset merge
   const P = presetDefaults(preset);
 
-  const _useSessionWindows =
-    useSessionWindows !== undefined
-      ? useSessionWindows
-      : P.useSessionWindows ?? false;
-
-  const _killzones =
-    killzones !== undefined
-      ? killzones
-      : P.killzones ?? "08:30-11:30,13:30-15:30";
-
-  const _imbalanceLookback =
-    imbalanceLookback !== undefined
-      ? imbalanceLookback
-      : P.imbalanceLookback ?? 20;
-
-  const _sweepTolBps =
-    sweepTolBps !== undefined ? sweepTolBps : P.sweepTolBps ?? 3;
-  const _minAtrBps = minAtrBps !== undefined ? minAtrBps : P.minAtrBps ?? 3;
-
-  const _fvgMinBps = fvgMinBps !== undefined ? fvgMinBps : P.fvgMinBps ?? 2.0;
-  const _needFvgAtr =
-    needFvgAtr !== undefined ? needFvgAtr : P.needFvgAtr ?? 0.85;
-  const _minBodyAtr =
-    minBodyAtr !== undefined ? minBodyAtr : P.minBodyAtr ?? 0.3;
-
-  const _requireMicroBOS =
-    requireMicroBOS !== undefined ? requireMicroBOS : P.requireMicroBOS ?? true;
-
-  const _requireSweep =
-    requireSweep !== undefined ? requireSweep : P.requireSweep ?? true;
-
-  const _allowStrong =
-    allowStrongSetupOverNeutralBias !== undefined
-      ? allowStrongSetupOverNeutralBias
-      : P.allowStrongSetupOverNeutralBias ?? true;
-
-  const _usePD = usePD !== undefined ? usePD : P.usePD ?? true;
-  const _useOTE = useOTE !== undefined ? useOTE : P.useOTE ?? true;
-
-  const _pdToleranceBps =
-    pdToleranceBps !== undefined ? pdToleranceBps : P.pdToleranceBps ?? 36;
-
-  const _oteLo = oteLo !== undefined ? oteLo : P.oteLo ?? 0.6;
-  const _oteHi = oteHi !== undefined ? oteHi : P.oteHi ?? 0.8;
-
-  const _tpMode = tpMode !== undefined ? tpMode : P.tpMode ?? "hybrid";
-  const _rrMinForKey =
-    rrMinForKey !== undefined ? rrMinForKey : P.rrMinForKey ?? 1.2;
+  // resolve effective params (prefer explicit opts, otherwise preset, else fallback)
+  const _useSessionWindows = useSessionWindows ?? (P.useSessionWindows ?? false);
+  const _killzones = killzones ?? (P.killzones ?? "08:30-11:30,13:30-15:30");
+  const _imbalanceLookback = imbalanceLookback ?? (P.imbalanceLookback ?? 20);
+  const _sweepTolBps = sweepTolBps ?? (P.sweepTolBps ?? 3);
+  const _minAtrBps = minAtrBps ?? (P.minAtrBps ?? 3);
+  const _fvgMinBps = fvgMinBps ?? (P.fvgMinBps ?? 2.0);
+  const _needFvgAtr = needFvgAtr ?? (P.needFvgAtr ?? 0.85);
+  const _minBodyAtr = minBodyAtr ?? (P.minBodyAtr ?? 0.3);
+  const _requireMicroBOS = requireMicroBOS ?? (P.requireMicroBOS ?? true);
+  const _requireSweep = requireSweep ?? (P.requireSweep ?? true);
+  const _allowStrong = allowStrongSetupOverNeutralBias ?? (P.allowStrongSetupOverNeutralBias ?? true);
+  const _usePD = usePD ?? (P.usePD ?? true);
+  const _useOTE = useOTE ?? (P.useOTE ?? true);
+  const _pdToleranceBps = pdToleranceBps ?? (P.pdToleranceBps ?? 36);
+  const _oteLo = oteLo ?? (P.oteLo ?? 0.6);
+  const _oteHi = oteHi ?? (P.oteHi ?? 0.8);
+  const _tpMode = tpMode ?? (P.tpMode ?? "hybrid");
+  const _rrMinForKey = rrMinForKey ?? (P.rrMinForKey ?? 1.2);
 
   const logger = createLogger({
     enabled: !!(debug || log?.enabled),
@@ -180,14 +150,11 @@ export function ultraSignalFactory(opts = {}) {
 
   const windows = parseWindowsCSV(_killzones);
 
-  // --- helpers
-  function clamp01(x) {
-    return Math.max(0, Math.min(1, x));
-  }
+  // ---------- helpers ----------
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
   function wickRejectOK(side, imb, bar, atrVal, cfg) {
-    if (!cfg?.enabled || !bar || !Number.isFinite(atrVal) || atrVal <= 0)
-      return true;
+    if (!cfg?.enabled || !bar || !(atrVal > 0)) return true;
     const bodyUp = bar.close >= bar.open;
     const bodyDn = bar.close <= bar.open;
     const upperWick = Math.max(0, bar.high - Math.max(bar.open, bar.close));
@@ -197,9 +164,9 @@ export function ultraSignalFactory(opts = {}) {
 
     let pierceOK = true;
     if (cfg.requirePierce) {
-      if (side === "long")
-        pierceOK = bar.low <= imb.bottom && bar.close >= imb.bottom;
-      else pierceOK = bar.high >= imb.top && bar.close <= imb.top;
+      pierceOK = side === "long"
+        ? (bar.low <= imb.bottom && bar.close >= imb.bottom)
+        : (bar.high >= imb.top && bar.close <= imb.top);
     }
 
     let bodyOK = true;
@@ -218,8 +185,9 @@ export function ultraSignalFactory(opts = {}) {
       const penMax = clamp01(cfg.penMax ?? 0.7);
       const wickOK = wickRejectOK(side, imb, lastBar, atrVal, wickRejection);
       const pen = wickOK ? penBase : Math.min(penMax, penBase + penWeakAdd);
-      if (side === "long") return imb.bottom + pen * (imb.mid - imb.bottom);
-      return imb.top - pen * (imb.top - imb.mid);
+      return side === "long"
+        ? imb.bottom + pen * (imb.mid - imb.bottom)
+        : imb.top - pen * (imb.top - imb.mid);
     }
     return imb.mid;
   }
@@ -243,73 +211,51 @@ export function ultraSignalFactory(opts = {}) {
     if (swHi) cands.push({ p: swHi.price, tag: "swingHi" });
     if (swLo) cands.push({ p: swLo.price, tag: "swingLo" });
 
-    const filtered = cands.filter((c) =>
-      wantAbove ? c.p > entryPx : c.p < entryPx
-    );
+    const filtered = cands.filter((c) => wantAbove ? c.p > entryPx : c.p < entryPx);
     if (!filtered.length) {
-      return {
-        tp: wantAbove ? entryPx + fallbackAbs : entryPx - fallbackAbs,
-        tag: "rrFallback",
-      };
+      return { tp: wantAbove ? entryPx + fallbackAbs : entryPx - fallbackAbs, tag: "rrFallback" };
     }
-
     const picked = filtered.reduce((best, cur) => {
       if (!best) return cur;
-      const dBest = Math.abs(best.p - entryPx);
-      const dCur = Math.abs(cur.p - entryPx);
-      return dCur < dBest ? cur : best;
+      return Math.abs(cur.p - entryPx) < Math.abs(best.p - entryPx) ? cur : best;
     }, null);
 
     return { tp: picked.p, tag: picked.tag };
   }
 
+  // ---------- main factory API ----------
   const api = ({ candles }) => {
     const bars = candles;
     const i = bars.length - 1;
     DBG.barsSeen++;
     const now = bars[i]?.time ?? Date.now();
 
-    if (i < Math.max(lookback, 200)) {
-      rej("earlyWarmup");
-      return null;
-    }
+    // warmup
+    if (i < Math.max(lookback, 200)) { rej("earlyWarmup"); return null; }
 
-    // enforce minimum gap between signals
+    // spacing
     if (i - _lastSignalBarIdx < Math.max(0, _minGapBarsBetweenSignals)) {
-      rej("signalSpacing");
-      return null;
+      rej("signalSpacing"); return null;
     }
 
     // session/time fences
     const m = minutesET(now);
     if (cashSessionGuard) {
-      const openET = 9 * 60 + 30,
-        closeET = 16 * 60;
+      const openET = 9 * 60 + 30, closeET = 16 * 60;
       if (!(m >= openET + firstMinGuard && m <= closeET - lastMinGuard)) {
-        rej("timeFence");
-        return null;
+        rej("timeFence"); return null;
       }
     } else {
       if (!(m >= firstMinGuard && m <= 24 * 60 - lastMinGuard)) {
-        rej("timeFence");
-        return null;
+        rej("timeFence"); return null;
       }
     }
-    if (_useSessionWindows && !inWindowsET(now, windows)) {
-      rej("windowFence");
-      return null;
-    }
+    if (_useSessionWindows && !inWindowsET(now, windows)) { rej("windowFence"); return null; }
 
     // bias
     const dBias = bias?.enabled ? chooseDailyBias(bars, bias) : 0;
-    if (
-      bias?.enabled &&
-      bias.gate === "strict" &&
-      dBias === 0 &&
-      !_allowStrong
-    ) {
-      rej("biasNeutralStrict");
-      return null;
+    if (bias?.enabled && bias.gate === "strict" && dBias === 0 && !_allowStrong) {
+      rej("biasNeutralStrict"); return null;
     }
 
     // ranges & ATR
@@ -320,22 +266,13 @@ export function ultraSignalFactory(opts = {}) {
     const A = atr(bars, Math.max(5, atrPeriod));
     const curATR = A[i];
     const price = bars[i].close;
-    if (curATR === undefined) {
-      rej("atrTooSmall");
-      return null;
-    }
+    if (curATR === undefined) { rej("atrTooSmall"); return null; }
     const atrBps = relBps(curATR, price);
-    if (atrBps < _minAtrBps) {
-      rej("atrTooSmall");
-      return null;
-    }
+    if (atrBps < _minAtrBps) { rej("atrTooSmall"); return null; }
 
     // imbalance
     const imb = recentImbalance(bars, i, _imbalanceLookback, preferIFVG);
-    if (!imb) {
-      rej("noImbalance");
-      return null;
-    }
+    if (!imb) { rej("noImbalance"); return null; }
 
     // FVG/body quality
     const body = Math.abs(bars[i].close - bars[i].open);
@@ -344,87 +281,51 @@ export function ultraSignalFactory(opts = {}) {
     const imbBps = relBps(imbSize, price);
     const fvgAtr = imbSize / Math.max(1e-12, curATR);
     if (imbBps < _fvgMinBps || bodyAtr < _minBodyAtr || fvgAtr < _needFvgAtr) {
-      rej("fvgTooSmall");
-      return null;
+      rej("fvgTooSmall"); return null;
     }
 
+    // sweep detection (with bias-aware nosweep fallback)
     let sw = detectSweep(bars, i, {
-      asian,
-      prevDay,
-      extraLevels: sessions,
-      tolBps: _sweepTolBps,
-      swingFallbackLookback: 30,
+      asian, prevDay, extraLevels: sessions, tolBps: _sweepTolBps, swingFallbackLookback: 30,
     });
 
-    let biasAgree =
-      (dBias > 0 && sw?.side === "long") || (dBias < 0 && sw?.side === "short");
+    const biasAgree = (dBias > 0 && sw?.side === "long") || (dBias < 0 && sw?.side === "short");
 
-    // If sweep missing, allow nosweep ONLY in "prefer" mode AND with bias alignment
-    if (!sw && requireSweepMode === "prefer") {
-      if (dBias !== 0) {
-        sw = {
-          side: dBias > 0 ? "long" : "short",
-          ref: bars[i].close,
-          kind: "nosweep",
-        };
-      }
+    if (!sw && requireSweepMode === "prefer" && dBias !== 0) {
+      sw = { side: dBias > 0 ? "long" : "short", ref: bars[i].close, kind: "nosweep" };
     }
-
-    // If sweep required strictly, or nosweep without bias, reject
-    if (!sw || (sw.kind === "nosweep" && requireSweep === true && !biasAgree)) {
-      rej("noSweep");
-      return null;
+    if (!sw || (sw.kind === "nosweep" && _requireSweep === true && !biasAgree)) {
+      rej("noSweep"); return null;
     }
 
     // align direction with imbalance
-    if (
-      (sw.side === "long" && imb.type !== "bull") ||
-      (sw.side === "short" && imb.type !== "bear")
-    ) {
-      rej("noImbalance");
-      return null;
+    if ((sw.side === "long" && imb.type !== "bull") || (sw.side === "short" && imb.type !== "bear")) {
+      rej("noImbalance"); return null;
     }
 
     // wick quality gate
-    if (!wickRejectOK(sw.side, imb, bars[i], curATR, wickRejection)) {
-      rej("wickFail");
-      return null;
-    }
+    if (!wickRejectOK(sw.side, imb, bars[i], curATR, wickRejection)) { rej("wickFail"); return null; }
 
-    // --- structural confirmation (BOS)
-    // Determine whether BOS is required (nosweep fallback) and whether it passed
+    // structure (BOS) requirements
     let bosOK = true;
-    const mustHaveBOS =
-      _requireMicroBOS ||
-      (sw.kind === "nosweep" && requireSweepMode === "prefer");
-
+    const mustHaveBOS = _requireMicroBOS || (sw.kind === "nosweep" && requireSweepMode === "prefer");
     if (mustHaveBOS) {
       const dir = sw.side === "long" ? "up" : "down";
-      const look =
-        sw.kind === "nosweep"
-          ? microBosLookbackNosweep || 42
-          : microBosLookback || 32;
+      const look = sw.kind === "nosweep" ? (microBosLookbackNosweep || 42) : (microBosLookback || 32);
       bosOK = microBOS(bars, i, dir, look, "wick");
-      if (!bosOK) {
-        rej("microBosFail");
-        return null;
-      }
+      if (!bosOK) { rej("microBosFail"); return null; }
     }
 
-    // --- PD (optional)
+    // PD (optional)
     if (_usePD && prevDay) {
       const tolAbs = price * (_pdToleranceBps / 10000);
-      const lo = prevDay.lo - tolAbs,
-        hi = prevDay.hi + tolAbs;
+      const lo = prevDay.lo - tolAbs, hi = prevDay.hi + tolAbs;
       const priceOK = price >= lo && price <= hi;
-      const midOK = imb ? imb.mid >= lo && imb.mid <= hi : false;
-      if (!(priceOK || midOK)) {
-        rej("pdFail");
-        return null;
-      }
+      const midOK = imb ? (imb.mid >= lo && imb.mid <= hi) : false;
+      if (!(priceOK || midOK)) { rej("pdFail"); return null; }
     }
 
-    // ---- OTE as SOFT signal only (no rejection)
+    // OTE as soft filter (no hard reject unless neutral bias)
     let otePass = true;
     if (_useOTE && imb) {
       const ph = recentSwing(bars, i, "down", 30);
@@ -432,105 +333,55 @@ export function ultraSignalFactory(opts = {}) {
       if (ph && pl && ph.price > pl.price) {
         if (sw.side === "long") {
           const range = ph.price - pl.price;
-          const z1 = ph.price - range * _oteHi,
-            z2 = ph.price - range * _oteLo;
-          const loZ = Math.min(z1, z2),
-            hiZ = Math.max(z1, z2);
+          const z1 = ph.price - range * _oteHi, z2 = ph.price - range * _oteLo;
+          const loZ = Math.min(z1, z2), hiZ = Math.max(z1, z2);
           otePass = imb.mid >= loZ && imb.mid <= hiZ;
         } else {
           const range = ph.price - pl.price;
-          const z1 = pl.price + range * _oteLo,
-            z2 = pl.price + range * _oteHi;
-          const loZ = Math.min(z1, z2),
-            hiZ = Math.max(z1, z2);
+          const z1 = pl.price + range * _oteLo, z2 = pl.price + range * _oteHi;
+          const loZ = Math.min(z1, z2), hiZ = Math.max(z1, z2);
           otePass = imb.mid >= loZ && imb.mid <= hiZ;
         }
       }
     }
 
-    // Extra guard: if HTF bias is neutral, require OTE alignment
-    if (bias?.enabled && dBias === 0 && _useOTE && !otePass) {
-      rej("oteFailNeutral");
-      return null;
-    }
+    if (bias?.enabled && dBias === 0 && _useOTE && !otePass) { rej("oteFailNeutral"); return null; }
 
     // If sweep came from Asia session, require HTF agreement
-    if (sw?.kind === "asia" && !((dBias > 0 && sw.side === "long") 
-      || (dBias < 0 && sw.side === "short"))) {
-      rej("asiaNoBias");
-      return null;
-    }
+    if (sw?.kind === "asia" && !biasAgree) { rej("asiaNoBias"); return null; }
 
-    // ---- confluence score (add BOS point if bosOK, regardless of _requireMicroBOS)
+    // confluence score
     let score = 0;
     if (sw) score += confluence.sweepPts ?? 0;
     if (imb) score += confluence.imbPts ?? 0;
-    if (bosOK) score += confluence.bosPts ?? 0; // <-- key change
+    if (bosOK) score += confluence.bosPts ?? 0;
     if (_usePD) score += confluence.pdPts ?? 0;
     if (_useOTE && otePass) score += confluence.otePts ?? 0;
-    biasAgree =
-      (dBias > 0 && sw.side === "long") || (dBias < 0 && sw.side === "short");
     if (bias?.enabled && biasAgree) score += confluence.htfPts ?? 0;
-
-    if ((confluence.minScore ?? 0) > 0 && score < confluence.minScore) {
-      rej("scoreFail");
-      return null;
-    }
+    if ((confluence.minScore ?? 0) > 0 && score < confluence.minScore) { rej("scoreFail"); return null; }
 
     // entry/stop
-    const entryEdge = chooseEntryPrice(
-      sw.side,
-      imb,
-      entryMode,
-      curATR,
-      bars[i]
-    );
+    const entryEdge = chooseEntryPrice(sw.side, imb, entryMode, curATR, bars[i]);
 
-    let stopRaw =
-      sw.side === "long"
-        ? imb.bottom - atrMult * curATR
-        : imb.top + atrMult * curATR;
-
+    let stopRaw = sw.side === "long" ? (imb.bottom - atrMult * curATR) : (imb.top + atrMult * curATR);
     const stopBps = relBps(Math.abs(entryEdge - stopRaw), price);
     if (stopBps < (minStopBps ?? 0)) {
       const want = (minStopBps / 10000) * price;
       stopRaw = sw.side === "long" ? entryEdge - want : entryEdge + want;
     }
-
     const riskAbs = Math.abs(entryEdge - stopRaw);
 
-    // TP: key vs RR
+    // TP selection
     let takeProfit, tpTag, rrTP;
     if ((_tpMode ?? "hybrid") === "rr") {
-      takeProfit =
-        sw.side === "long"
-          ? entryEdge + rr * riskAbs
-          : entryEdge - rr * riskAbs;
-      tpTag = "rr";
-      rrTP = rr;
+      takeProfit = sw.side === "long" ? entryEdge + rr * riskAbs : entryEdge - rr * riskAbs;
+      tpTag = "rr"; rrTP = rr;
     } else {
-      const { tp, tag } = nearestOppositeKeyTP(
-        sw.side,
-        entryEdge,
-        { asian, prevDay, sessions, bars, idx: i },
-        rr * riskAbs
-      );
+      const { tp, tag } = nearestOppositeKeyTP(sw.side, entryEdge, { asian, prevDay, sessions, bars, idx: i }, rr * riskAbs);
       const rrToKey = Math.abs(tp - entryEdge) / Math.max(1e-12, riskAbs);
-      const useKey =
-        _tpMode === "key" ||
-        ((_tpMode ?? "hybrid") === "hybrid" && rrToKey >= (rrMinForKey ?? 1.2));
-      if (useKey) {
-        takeProfit = tp;
-        tpTag = tag;
-        rrTP = rrToKey;
-      } else {
-        takeProfit =
-          sw.side === "long"
-            ? entryEdge + rr * riskAbs
-            : entryEdge - rr * riskAbs;
-        tpTag = "rrFallback";
-        rrTP = rr;
-      }
+      const useKey = _tpMode === "key" || ((_tpMode ?? "hybrid") === "hybrid" && rrToKey >= (_rrMinForKey ?? 1.2));
+      if (useKey) { takeProfit = tp; tpTag = tag; rrTP = rrToKey; }
+      else { takeProfit = sw.side === "long" ? entryEdge + rr * riskAbs : entryEdge - rr * riskAbs; tpTag = "rrFallback"; rrTP = rr; }
     }
 
     if (DBG) DBG.accepted = (DBG.accepted || 0) + 1;
@@ -580,4 +431,4 @@ export function ultraSignalFactory(opts = {}) {
   return api;
 }
 
-export default ultraSignalFactory;
+export default signalFactory;

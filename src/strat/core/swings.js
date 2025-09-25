@@ -1,5 +1,5 @@
-// src/strategy/ultra/core/swings.js
-import { swingHigh, swingLow, bpsOf } from '../../../utils/indicators.js';
+// src/strat/core/swings.js
+import { swingHigh, swingLow, bpsOf } from '../../utils/indicators.js';
 
 export function recentSwing(bars,i,dir,lookback=20){
   const start=Math.max(2,i-lookback);

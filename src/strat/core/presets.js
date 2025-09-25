@@ -1,4 +1,4 @@
-// src/strategy/ultra/core/presets.js
+// src/strat/core/presets.js
 export function presetDefaults(name){
   const p = (name || 'standard').toLowerCase();
 

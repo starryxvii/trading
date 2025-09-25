@@ -1,5 +1,6 @@
+// src/engine/backtest.js (wherever your backtest function lives)
 import { atr } from '../utils/indicators.js';
-import { positionSize } from '../risk/positionSizing.js';
+import { positionSize } from '../utils/positionSizing.js';
 import {
   applyFill,
   clampStop,
@@ -50,12 +51,9 @@ export function backtest({
   minQty = 0.001,
   maxLeverage = 2.0,
 
-  // smart entry-chase to improve fill rate without violating risk
   entryChase = { enabled: true, afterBars: 2, maxSlipR: 0.20, convertOnExpiry: false },
 
-  // NEW: keep planned-R intact even if the entry slips (limit -> CE -> market)
   reanchorStopOnFill = true,
-  // NEW: absolute safety valve against extreme slip (applies to ANY openFromPending call)
   maxSlipROnFill = 0.40
 }) {
   const closed = [];
@@ -76,6 +74,7 @@ export function backtest({
     const side = openPos.side;
     const dir = side === 'long' ? 1 : -1;
     const entryFill = openPos.entryFill;
+
     const gross = (exitPx - entryFill) * dir * qty;
     const entryFeePortion = (openPos.entryFeeTotal || 0) * (qty / openPos.initSize);
     const exitFeeTotal = exitFeePerUnit * qty;
@@ -105,15 +104,12 @@ export function backtest({
     const dir = openPos.side === 'long' ? 1 : -1;
     const remQty = openPos.size;
     const beDelta = Math.abs(realized / remQty);
-    const bePx = (dir === 1)
-      ? (openPos.entryFill - beDelta)
-      : (openPos.entryFill + beDelta);
-    const tightened = (dir === 1)
-      ? Math.max(openPos.stop, bePx)
-      : Math.min(openPos.stop, bePx);
+    const bePx = dir === 1 ? (openPos.entryFill - beDelta) : (openPos.entryFill + beDelta);
+    const tightened = dir === 1 ? Math.max(openPos.stop, bePx) : Math.min(openPos.stop, bePx);
     openPos.stop = oco?.clampStops ? clampStop(lastClosePx, tightened, openPos.side, oco) : tightened;
   }
 
+  // 200-bar warm history for indicators/signals
   let hist = candles.slice(0, 200);
 
   for (let i = 200; i < candles.length; i++) {
@@ -123,11 +119,11 @@ export function backtest({
     const trigMode = triggerMode || (oco?.mode || 'intrabar');
     const trigModeFill = 'intrabar';
 
+    // day buckets
     const dayKey = ymdUTC(c.time);
-    if (curDay === null) { curDay = dayKey; dayPnl = 0; dayTrades = 0; }
-    if (dayKey !== curDay) { curDay = dayKey; dayPnl = 0; dayTrades = 0; }
+    if (curDay === null || dayKey !== curDay) { curDay = dayKey; dayPnl = 0; dayTrades = 0; }
 
-    // --- time-based exits ---
+    // ----- time-based exits -----
     if (open && open._maxBarsInTrade > 0) {
       const barsHeld = Math.max(1, Math.round((c.time - open.openTime) / estBarMs));
       if (barsHeld >= open._maxBarsInTrade) {
@@ -160,7 +156,7 @@ export function backtest({
       continue;
     }
 
-    // --- manage existing pending ---
+    // ----- manage pending order -----
     if (!open && pending) {
       const maxLossDollars = (maxDailyLossPct / 100) * eq;
       const dailyLossHit = dayPnl <= -Math.abs(maxLossDollars);
@@ -172,8 +168,6 @@ export function backtest({
           const priceNow = c.close;
           const dir = pending.side === 'long' ? 1 : -1;
           const slippedR = Math.max(0, (dir === 1 ? (priceNow - pending.entry) : (pending.entry - priceNow))) / Math.max(1e-8, riskAtEdge);
-
-          // GLOBAL SLIP GUARD
           if (slippedR > (maxSlipROnFill ?? Infinity)) {
             pending = null;
           } else {
@@ -202,9 +196,7 @@ export function backtest({
             const dir = pending.side === 'long' ? 1 : -1;
             const slippedR = Math.max(0, (dir === 1 ? (priceNow - pending.entry) : (pending.entry - priceNow))) / Math.max(1e-8, riskRef);
 
-            // GLOBAL SLIP GUARD
             if (slippedR > (maxSlipROnFill ?? Infinity)) {
-              // cancel rather than take a tiny-risk huge-R loss later
               pending = null;
             } else if (slippedR > 0 && slippedR <= (entryChase.maxSlipR ?? 0.2)) {
               const ok = openFromPending(priceNow, 'market');
@@ -215,7 +207,7 @@ export function backtest({
       }
     }
 
-    // --- manage open position ---
+    // ----- manage open position -----
     if (open) {
       const price = c.close;
       const hi = c.high, lo = c.low;
@@ -231,40 +223,44 @@ export function backtest({
       open._mfeR = Math.max(open._mfeR ?? -Infinity, hiR);
       open._maeR = Math.min(open._maeR ?? Infinity,  loR);
 
+      // BE move
       if (open._breakevenAtR > 0 && hiR >= open._breakevenAtR && !open._beArmed) {
         const cand = open.entry;
-        const tightened = (open.side === 'long') ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
+        const tightened = open.side === 'long' ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
         open.stop = oco?.clampStops ? clampStop(c.close, tightened, open.side, oco) : tightened;
         open._beArmed = true;
       }
 
+      // 1R hard trail after threshold
       if (open._trailAfterR > 0 && hiR >= open._trailAfterR) {
-        const trailStep = risk;
-        const cand = (open.side === 'long') ? (c.close - trailStep) : (c.close + trailStep);
-        const tightened = (open.side === 'long') ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
+        const cand = open.side === 'long' ? (c.close - risk) : (c.close + risk);
+        const tightened = open.side === 'long' ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
         open.stop = oco?.clampStops ? clampStop(c.close, tightened, open.side, oco) : tightened;
       }
 
+      // MFE trail
       if (mfeTrail?.enabled && open._mfeR >= (mfeTrail.armR ?? 1.0)) {
         const give = Math.max(0, mfeTrail.givebackR ?? 0.5);
         const targetR = Math.max(0, open._mfeR - give);
-        const cand = (open.side === 'long') ? open.entry + targetR * risk : open.entry - targetR * risk;
-        const tightened = (open.side === 'long') ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
+        const cand = open.side === 'long' ? open.entry + targetR * risk : open.entry - targetR * risk;
+        const tightened = open.side === 'long' ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
         open.stop = oco?.clampStops ? clampStop(c.close, tightened, open.side, oco) : tightened;
       }
 
+      // ATR trail (optional)
       if (atrTrailMult > 0 && atrArr?.[i] !== undefined) {
         const t = atrArr[i] * atrTrailMult;
-        const cand = (open.side === 'long') ? (c.close - t) : (c.close + t);
-        const tightened = (open.side === 'long') ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
+        const cand = open.side === 'long' ? (c.close - t) : (c.close + t);
+        const tightened = open.side === 'long' ? Math.max(open.stop, cand) : Math.min(open.stop, cand);
         open.stop = oco?.clampStops ? clampStop(c.close, tightened, open.side, oco) : tightened;
       }
 
+      // vol-based size cut
       if (volScale?.enabled && open.entryATR && open.size > minQty && atrArr?.[i] !== undefined) {
         const ratio = atrArr[i] / Math.max(1e-12, open.entryATR);
-        if (ratio >= (volScale.cutIfAtrX ?? 1.30) && rNow < (volScale.noCutAboveR ?? 1.5) && !open._volCutDone) {
-          const cutRaw = open.size * (volScale.cutFrac ?? 0.33);
-          const cutQty = roundStep(cutRaw, qtyStep);
+        const canCut = ratio >= (volScale.cutIfAtrX ?? 1.30) && rNow < (volScale.noCutAboveR ?? 1.5) && !open._volCutDone;
+        if (canCut) {
+          const cutQty = roundStep(open.size * (volScale.cutFrac ?? 0.33), qtyStep);
           if (cutQty >= minQty && cutQty < open.size) {
             const exitSide = open.side === 'long' ? 'short' : 'long';
             const { price: filled, fee: exitFeeUnit } = applyFill(price, exitSide, { slippageBps, feeBps, kind: 'market' });
@@ -275,22 +271,23 @@ export function backtest({
         }
       }
 
+      // pyramiding
       let addedThisBar = false;
       if (pyramiding?.enabled && (open._adds ?? 0) < (pyramiding.maxAdds ?? 0)) {
         const nextIdx = (open._adds || 0) + 1;
         const triggerR = (pyramiding.addAtR ?? 1.0) * nextIdx;
-        const triggerPx = (open.side === 'long') ? open.entry + triggerR * risk : open.entry - triggerR * risk;
+        const triggerPx = open.side === 'long' ? open.entry + triggerR * risk : open.entry - triggerR * risk;
         const okBEB = !pyramiding.onlyAfterBreakEven || (
           (open.side === 'long' && open.stop >= open.entry) ||
           (open.side === 'short' && open.stop <= open.entry)
         );
-        const touched = (open.side === 'long')
+        const touched = open.side === 'long'
           ? (trigMode === 'intrabar' ? (c.high >= triggerPx) : (c.close >= triggerPx))
           : (trigMode === 'intrabar' ? (c.low  <= triggerPx) : (c.close <= triggerPx));
+
         if (okBEB && touched) {
           const base = (open.baseSize || open.initSize);
-          const addRaw = base * (pyramiding.addFrac ?? 0.25);
-          const addQty = roundStep(addRaw, qtyStep);
+          const addQty = roundStep(base * (pyramiding.addFrac ?? 0.25), qtyStep);
           if (addQty >= minQty) {
             const { price: addFill, fee: addFeeUnit } = applyFill(triggerPx, open.side, { slippageBps, feeBps, kind: 'limit' });
             const newSize = open.size + addQty;
@@ -305,26 +302,28 @@ export function backtest({
         }
       }
 
+      // scale out to TP extender
       if (!addedThisBar && !open._scaled && scaleOutAtR > 0) {
-        const trigPx = (open.side === 'long') ? open.entry + scaleOutAtR * risk : open.entry - scaleOutAtR * risk;
-        const touched = (open.side === 'long')
+        const trigPx = open.side === 'long' ? open.entry + scaleOutAtR * risk : open.entry - scaleOutAtR * risk;
+        const touched = open.side === 'long'
           ? (trigMode === 'intrabar' ? (c.high >= trigPx) : (c.close >= trigPx))
           : (trigMode === 'intrabar' ? (c.low  <= trigPx) : (c.close <= trigPx));
+
         if (touched) {
           const exitSide = open.side === 'long' ? 'short' : 'long';
           const { price: filled, fee: exitFeeUnit } = applyFill(trigPx, exitSide, { slippageBps, feeBps, kind: 'limit' });
-          const want = open.size * scaleOutFrac;
-          const qty = roundStep(want, qtyStep);
+          const qty = roundStep(open.size * scaleOutFrac, qtyStep);
           if (qty >= minQty && qty < open.size) {
             closeLeg({ openPos: open, qty, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'SCALE' });
             open._scaled = true;
-            open.takeProfit = (open.side === 'long') ? open.entry + finalTP_R * risk : open.entry - finalTP_R * risk;
+            open.takeProfit = open.side === 'long' ? open.entry + finalTP_R * risk : open.entry - finalTP_R * risk;
             tightenStopToNetBE(open, c.close);
             open._beArmed = true;
           }
         }
       }
 
+      // OCO exits
       const exitSide = open.side === 'long' ? 'short' : 'long';
       const { hit, px } = ocoExitCheck({
         side: open.side, stop: open.stop, tp: open.takeProfit,
@@ -339,13 +338,13 @@ export function backtest({
       }
     }
 
+    // cooldown / guards
     if (open || cooldown > 0) { if (cooldown > 0) cooldown--; continue; }
-
     const maxLossDollars = (maxDailyLossPct / 100) * eq;
     if (dayPnl <= -Math.abs(maxLossDollars)) { pending = null; continue; }
     if (dailyMaxTrades > 0 && dayTrades >= dailyMaxTrades) { pending = null; continue; }
 
-    // --- request a new signal; build pending; try same-bar intrabar fill if touched ---
+    // ----- request new signal & stage pending -----
     if (!pending) {
       const sig = signal({ candles: hist });
       if (!sig) continue;
@@ -359,7 +358,7 @@ export function backtest({
         riskFrac: riskPct / 100,
         expiresAt: i + Math.max(1, expiryBars),
         startedAtIndex: i,
-        meta: sig,         // carry planned _initRisk for re-anchoring
+        meta: sig,
         plannedRiskAbs: Math.abs(sig._initRisk ?? (sig.entry - sig.stop))
       };
 
@@ -369,19 +368,18 @@ export function backtest({
       }
     }
 
-    // helper lives at end so it can see closures above
+    // ----- helper (captures closures above) -----
     function openFromPending(entryPx, kind = 'limit') {
-      // SLIP GUARD (applies to any open)
+      // slip guard
       const plannedRisk = Math.max(1e-8, pending.plannedRiskAbs ?? Math.abs(pending.entry - pending.stop));
-      const slipAbs = Math.abs(entryPx - pending.entry);
-      const slipR = slipAbs / plannedRisk;
+      const slipR = Math.abs(entryPx - pending.entry) / plannedRisk;
       if (slipR > (maxSlipROnFill ?? Infinity)) return false;
 
-      // Optionally re-anchor stop so R doesn’t collapse/explode due to slip
+      // re-anchor stop to keep planned R intact
       let stopPx = pending.stop;
       if (reanchorStopOnFill) {
         const dir = pending.side === 'long' ? 1 : -1;
-        stopPx = (dir === 1) ? (entryPx - plannedRisk) : (entryPx + plannedRisk);
+        stopPx = dir === 1 ? (entryPx - plannedRisk) : (entryPx + plannedRisk);
       }
 
       const sizeRaw = positionSize({

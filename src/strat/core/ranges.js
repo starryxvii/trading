@@ -1,6 +1,6 @@
-// src/strategy/ultra/core/ranges.js
+// src/strat/core/ranges.js
 import { etDateStr } from "./utils.js";
-import { minutesET } from "../../../utils/time.js";
+import { minutesET } from "../../utils/time.js";
 
 export function computeDayRangeET(bars, i, dayOffset = 0) {
   const keys = [];

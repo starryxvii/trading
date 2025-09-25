@@ -1,5 +1,5 @@
-// src/strategy/ultra/core/bias.js
-import { ema } from '../../../utils/indicators.js';
+// src/strat/core/bias.js
+import { ema } from '../../utils/indicators.js';
 import { aggregateMinutes, slopeBps } from './utils.js';
 
 export function computeBiasOnTF(bars, minutes, emaPeriod, bandBps, minSlopeBps) {

@@ -5,8 +5,8 @@ import { fileURLToPath } from "url";
 
 import { fetchHistorical, fetchLatestCandle } from "./data/yahoo.js";
 import { backtest } from "./backtest/engine.js";
-import { ultraSignalFactory } from "./strategy/ultra/index.js";
-import { positionSize } from "./risk/positionSizing.js";
+import { signalFactory } from "./strat/main.js";
+import { positionSize } from "./utils/positionSizing.js";
 import { PaperBroker } from "./broker/paper.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,8 +98,8 @@ function applyAssetDefaults(cfg, symbolFromArg) {
 
 function buildSignal(cfg) {
   const strat = (cfg.strategy || "ultra").toLowerCase();
-  if (strat === "ultra") return ultraSignalFactory({ ...cfg.ultra });
-  return ultraSignalFactory({ ...cfg.ultra });
+  if (strat === "ultra") return signalFactory({ ...cfg.ultra });
+  return signalFactory({ ...cfg.ultra });
 }
 
 // ---------------- backtest ----------------
