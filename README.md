@@ -9,7 +9,6 @@
 
 > Data is pulled from [yahoo-finance2](https://github.com/gadicc/yahoo-finance2). On a 5m time-frame, Yahoo caps historical data at 60d.
 ## Quick Start
-### Prerequisites
 
 ```
 cp config/config.example.json config/config.json
@@ -23,13 +22,13 @@ Results print to the console; trades CSV goes to `output/` if enabled.
 
 ### 1) Time fences
 
-	•	Only evaluates bars inside your killzones (per ET) and optional cash-session guard for stocks.
-	•	First/last minute guards avoid open/close junk.
+- Only evaluates bars inside your killzones (per ET) and optional cash-session guard for stocks.
+- First/last minute guards avoid open/close junk.
 
 ### 2) Bias (HTF filter)
 
-	•	A higher-timeframe EMA/slope band sets a daily bias (long / short / neutral).
-	•	With strict gating, neutral days are skipped unless you allow “strong setup over neutral”.
+- A higher-timeframe EMA/slope band sets a daily bias (long / short / neutral).
+- With strict gating, neutral days are skipped unless you allow “strong setup over neutral”.
 
 ### 3) Setup
 
