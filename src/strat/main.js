@@ -112,6 +112,11 @@ export function signalFactory(opts = {}) {
     minGapBarsBetweenSignals: _minGapBarsBetweenSignals = 4,
 
     requireSweepMode = "prefer", // 'force' | 'prefer'
+    asiaRequiresBiasAgree = true, // NEW: allow relaxing Asia sweep bias agreement
+
+    // ATR regime softening (optional)
+    atrFloorBpsQuantile = 0.10, // 10th percentile soft floor
+    atrFloorLookback = 1000,    // lookback bars for ATR-bps percentile
   } = opts;
 
   let _lastSignalBarIdx = -Infinity;
@@ -152,6 +157,10 @@ export function signalFactory(opts = {}) {
 
   // ---------- helpers ----------
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+  // rejection histogram (NEW)
+  const _rejCounts = {};
+  const REJ = (why) => { _rejCounts[why] = (_rejCounts[why] || 0) + 1; rej(why); };
 
   function wickRejectOK(side, imb, bar, atrVal, cfg) {
     if (!cfg?.enabled || !bar || !(atrVal > 0)) return true;
@@ -230,12 +239,17 @@ export function signalFactory(opts = {}) {
     DBG.barsSeen++;
     const now = bars[i]?.time ?? Date.now();
 
+    // periodic dump of reject histogram (every ~500 bars)
+    if (logger.on && i % 500 === 0 && i > 0) {
+      logger.info({ t: new Date(now).toISOString(), msg: "rejHistogram", counts: _rejCounts });
+    }
+
     // warmup
-    if (i < Math.max(lookback, 200)) { rej("earlyWarmup"); return null; }
+    if (i < Math.max(lookback, 200)) { REJ("earlyWarmup"); return null; }
 
     // spacing
     if (i - _lastSignalBarIdx < Math.max(0, _minGapBarsBetweenSignals)) {
-      rej("signalSpacing"); return null;
+      REJ("signalSpacing"); return null;
     }
 
     // session/time fences
@@ -243,19 +257,19 @@ export function signalFactory(opts = {}) {
     if (cashSessionGuard) {
       const openET = 9 * 60 + 30, closeET = 16 * 60;
       if (!(m >= openET + firstMinGuard && m <= closeET - lastMinGuard)) {
-        rej("timeFence"); return null;
+        REJ("timeFence"); return null;
       }
     } else {
       if (!(m >= firstMinGuard && m <= 24 * 60 - lastMinGuard)) {
-        rej("timeFence"); return null;
+        REJ("timeFence"); return null;
       }
     }
-    if (_useSessionWindows && !inWindowsET(now, windows)) { rej("windowFence"); return null; }
+    if (_useSessionWindows && !inWindowsET(now, windows)) { REJ("windowFence"); return null; }
 
     // bias
     const dBias = bias?.enabled ? chooseDailyBias(bars, bias) : 0;
     if (bias?.enabled && bias.gate === "strict" && dBias === 0 && !_allowStrong) {
-      rej("biasNeutralStrict"); return null;
+      REJ("biasNeutralStrict"); return null;
     }
 
     // ranges & ATR
@@ -266,13 +280,30 @@ export function signalFactory(opts = {}) {
     const A = atr(bars, Math.max(5, atrPeriod));
     const curATR = A[i];
     const price = bars[i].close;
-    if (curATR === undefined) { rej("atrTooSmall"); return null; }
+    if (curATR === undefined) { REJ("atrTooSmall"); return null; }
+
+    // ATR bps with regime-soft floor
     const atrBps = relBps(curATR, price);
-    if (atrBps < _minAtrBps) { rej("atrTooSmall"); return null; }
+    let minAtrBpsEff = _minAtrBps;
+    if ((atrFloorBpsQuantile ?? 0) > 0 && atrFloorLookback > 200) {
+      const from = Math.max(0, bars.length - atrFloorLookback);
+      const arr = [];
+      for (let k = from; k <= i; k++) {
+        const a = A[k];
+        if (a !== undefined) arr.push(relBps(a, bars[k].close));
+      }
+      if (arr.length > 20) {
+        arr.sort((x, y) => x - y);
+        const idx = Math.floor((arr.length - 1) * Math.max(0, Math.min(1, atrFloorBpsQuantile)));
+        // soften floor to the lower of hard floor and percentile (i.e., don't make it stricter)
+        minAtrBpsEff = Math.min(_minAtrBps, arr[idx]);
+      }
+    }
+    if (atrBps < minAtrBpsEff) { REJ("atrTooSmall"); return null; }
 
     // imbalance
     const imb = recentImbalance(bars, i, _imbalanceLookback, preferIFVG);
-    if (!imb) { rej("noImbalance"); return null; }
+    if (!imb) { REJ("noImbalance"); return null; }
 
     // FVG/body quality
     const body = Math.abs(bars[i].close - bars[i].open);
@@ -281,7 +312,7 @@ export function signalFactory(opts = {}) {
     const imbBps = relBps(imbSize, price);
     const fvgAtr = imbSize / Math.max(1e-12, curATR);
     if (imbBps < _fvgMinBps || bodyAtr < _minBodyAtr || fvgAtr < _needFvgAtr) {
-      rej("fvgTooSmall"); return null;
+      REJ("fvgTooSmall"); return null;
     }
 
     // sweep detection (with bias-aware nosweep fallback)
@@ -295,25 +326,27 @@ export function signalFactory(opts = {}) {
       sw = { side: dBias > 0 ? "long" : "short", ref: bars[i].close, kind: "nosweep" };
     }
     if (!sw || (sw.kind === "nosweep" && _requireSweep === true && !biasAgree)) {
-      rej("noSweep"); return null;
+      REJ("noSweep"); return null;
     }
 
     // align direction with imbalance
     if ((sw.side === "long" && imb.type !== "bull") || (sw.side === "short" && imb.type !== "bear")) {
-      rej("noImbalance"); return null;
+      REJ("noImbalance"); return null;
     }
 
     // wick quality gate
-    if (!wickRejectOK(sw.side, imb, bars[i], curATR, wickRejection)) { rej("wickFail"); return null; }
+    if (!wickRejectOK(sw.side, imb, bars[i], curATR, wickRejection)) { REJ("wickFail"); return null; }
 
     // structure (BOS) requirements
-    let bosOK = true;
+    let bosChecked = false;
+    let bosOK = false;
     const mustHaveBOS = _requireMicroBOS || (sw.kind === "nosweep" && requireSweepMode === "prefer");
     if (mustHaveBOS) {
+      bosChecked = true;
       const dir = sw.side === "long" ? "up" : "down";
       const look = sw.kind === "nosweep" ? (microBosLookbackNosweep || 42) : (microBosLookback || 32);
       bosOK = microBOS(bars, i, dir, look, "wick");
-      if (!bosOK) { rej("microBosFail"); return null; }
+      if (!bosOK) { REJ("microBosFail"); return null; }
     }
 
     // PD (optional)
@@ -322,7 +355,7 @@ export function signalFactory(opts = {}) {
       const lo = prevDay.lo - tolAbs, hi = prevDay.hi + tolAbs;
       const priceOK = price >= lo && price <= hi;
       const midOK = imb ? (imb.mid >= lo && imb.mid <= hi) : false;
-      if (!(priceOK || midOK)) { rej("pdFail"); return null; }
+      if (!(priceOK || midOK)) { REJ("pdFail"); return null; }
     }
 
     // OTE as soft filter (no hard reject unless neutral bias)
@@ -345,20 +378,20 @@ export function signalFactory(opts = {}) {
       }
     }
 
-    if (bias?.enabled && dBias === 0 && _useOTE && !otePass) { rej("oteFailNeutral"); return null; }
+    if (bias?.enabled && dBias === 0 && _useOTE && !otePass) { REJ("oteFailNeutral"); return null; }
 
-    // If sweep came from Asia session, require HTF agreement
-    if (sw?.kind === "asia" && !biasAgree) { rej("asiaNoBias"); return null; }
+    // If sweep came from Asia session, require HTF agreement (configurable)
+    if (asiaRequiresBiasAgree && sw?.kind === "asia" && !biasAgree) { REJ("asiaNoBias"); return null; }
 
     // confluence score
     let score = 0;
     if (sw) score += confluence.sweepPts ?? 0;
     if (imb) score += confluence.imbPts ?? 0;
-    if (bosOK) score += confluence.bosPts ?? 0;
+    if (bosChecked && bosOK) score += confluence.bosPts ?? 0; // only add if actually checked & passed
     if (_usePD) score += confluence.pdPts ?? 0;
     if (_useOTE && otePass) score += confluence.otePts ?? 0;
     if (bias?.enabled && biasAgree) score += confluence.htfPts ?? 0;
-    if ((confluence.minScore ?? 0) > 0 && score < confluence.minScore) { rej("scoreFail"); return null; }
+    if ((confluence.minScore ?? 0) > 0 && score < confluence.minScore) { REJ("scoreFail"); return null; }
 
     // entry/stop
     const entryEdge = chooseEntryPrice(sw.side, imb, entryMode, curATR, bars[i]);
@@ -377,7 +410,12 @@ export function signalFactory(opts = {}) {
       takeProfit = sw.side === "long" ? entryEdge + rr * riskAbs : entryEdge - rr * riskAbs;
       tpTag = "rr"; rrTP = rr;
     } else {
-      const { tp, tag } = nearestOppositeKeyTP(sw.side, entryEdge, { asian, prevDay, sessions, bars, idx: i }, rr * riskAbs);
+      const { tp, tag } = nearestOppositeKeyTP(
+        sw.side,
+        entryEdge,
+        { asian, prevDay, sessions, bars, idx: i },
+        rr * riskAbs
+      );
       const rrToKey = Math.abs(tp - entryEdge) / Math.max(1e-12, riskAbs);
       const useKey = _tpMode === "key" || ((_tpMode ?? "hybrid") === "hybrid" && rrToKey >= (_rrMinForKey ?? 1.2));
       if (useKey) { takeProfit = tp; tpTag = tag; rrTP = rrToKey; }

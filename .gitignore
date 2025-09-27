@@ -3,3 +3,4 @@
 /debug
 /config/*
 !/config/config.example.json
+.DS_STORE

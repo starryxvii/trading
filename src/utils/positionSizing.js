@@ -1,4 +1,4 @@
-// src/risk/positionSizing.js
+// src/utils/positionSizing.js
 export function positionSize({
   equity,
   entry,
