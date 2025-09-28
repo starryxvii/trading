@@ -1,4 +1,4 @@
-// src/backtest/engine.js 
+// src/backtest/engine.js
 import { atr } from '../utils/indicators.js';
 import { positionSize } from '../utils/positionSizing.js';
 import {
@@ -70,6 +70,13 @@ export function backtest({
   const needAtr = (atrTrailMult > 0) || (volScale?.enabled === true);
   const atrArr = needAtr ? atr(candles, volScale?.atrPeriod || atrTrailPeriod) : null;
 
+  // --- record equity over time (for daily Sharpe/Sortino & DD) ---
+  const eqSeries = [];
+  // seed the series with the first candle time (if available)
+  if (candles?.length) {
+    eqSeries.push({ time: candles[0].time, equity: eq });
+  }
+
   function closeLeg({ openPos, qty, exitPx, exitFeePerUnit, time, reason }) {
     const side = openPos.side;
     const dir = side === 'long' ? 1 : -1;
@@ -81,6 +88,9 @@ export function backtest({
     const pnl = gross - entryFeePortion - exitFeeTotal;
 
     eq += pnl; dayPnl += pnl;
+
+    // capture realized equity at the moment of the exit
+    eqSeries.push({ time, equity: eq });
 
     const record = {
       ...openPos,
@@ -132,7 +142,7 @@ export function backtest({
         closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'TIME' });
         cooldown = open._cooldownBars || 0;
         open = null;
-        continue;
+        // fall through to per-bar equity snapshot at bottom
       }
     }
     if (open && Number.isFinite(open._maxHoldMin) && open._maxHoldMin > 0) {
@@ -143,7 +153,6 @@ export function backtest({
         closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'TIME' });
         cooldown = open._cooldownBars || 0;
         open = null;
-        continue;
       }
     }
 
@@ -153,7 +162,6 @@ export function backtest({
       closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: exitFeeUnit, time: c.time, reason: 'EOD' });
       cooldown = open._cooldownBars || 0;
       open = null;
-      continue;
     }
 
     // ----- manage pending order -----
@@ -339,15 +347,20 @@ export function backtest({
     }
 
     // cooldown / guards
-    if (open || cooldown > 0) { if (cooldown > 0) cooldown--; continue; }
+    if (open || cooldown > 0) {
+      if (cooldown > 0) cooldown--;
+      // per-bar equity snapshot (even during cooldown/open)
+      eqSeries.push({ time: c.time, equity: eq });
+      continue;
+    }
     const maxLossDollars = (maxDailyLossPct / 100) * eq;
-    if (dayPnl <= -Math.abs(maxLossDollars)) { pending = null; continue; }
-    if (dailyMaxTrades > 0 && dayTrades >= dailyMaxTrades) { pending = null; continue; }
+    if (dayPnl <= -Math.abs(maxLossDollars)) { pending = null; eqSeries.push({ time: c.time, equity: eq }); continue; }
+    if (dailyMaxTrades > 0 && dayTrades >= dailyMaxTrades) { pending = null; eqSeries.push({ time: c.time, equity: eq }); continue; }
 
     // ----- request new signal & stage pending -----
     if (!pending) {
       const sig = signal({ candles: hist });
-      if (!sig) continue;
+      if (!sig) { eqSeries.push({ time: c.time, equity: eq }); continue; }
 
       const expiryBars = sig._entryExpiryBars ?? 5;
       pending = {
@@ -367,6 +380,9 @@ export function backtest({
         if (!ok) pending = null;
       }
     }
+
+    // per-bar equity snapshot
+    eqSeries.push({ time: c.time, equity: eq });
 
     // ----- helper (captures closures above) -----
     function openFromPending(entryPx, kind = 'limit') {
@@ -426,9 +442,17 @@ export function backtest({
     }
   }
 
-  const metrics = buildMetrics({ closed, equityStart: equity, equityFinal: eq, candles, estBarMs });
+  const metrics = buildMetrics({
+    closed,
+    equityStart: equity,
+    equityFinal: eq,
+    candles,
+    estBarMs,
+    eqSeries
+  });
+
   if (report?.exportCsv && closed.length) {
     exportTradesCsv(closed, { symbol, interval, range, outDir: report?.outDir });
   }
-  return { trades: closed, metrics };
+  return { trades: closed, metrics, eqSeries };
 }
