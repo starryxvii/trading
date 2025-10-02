@@ -1,4 +1,5 @@
 // src/backtest/engine.js
+
 import { atr } from '../utils/indicators.js';
 import { positionSize } from '../utils/positionSizing.js';
 import {
@@ -9,7 +10,8 @@ import {
   isEODBar,
   roundStep,
   estimateBarMs,
-  ymdUTC
+  ymdUTC,
+  ymdET
 } from './core/helpers.js';
 import { buildMetrics } from './core/metrics.js';
 import { exportTradesCsv } from './core/csv.js';
@@ -129,9 +131,9 @@ export function backtest({
     const trigMode = triggerMode || (oco?.mode || 'intrabar');
     const trigModeFill = 'intrabar';
 
-    // day buckets
-    const dayKey = ymdUTC(c.time);
-    if (curDay === null || dayKey !== curDay) { curDay = dayKey; dayPnl = 0; dayTrades = 0; }
+    // day buckets (use ET day if we’re running session-style)
+    const dayKeyNow = (flattenAtClose || trigMode === 'close') ? ymdET(c.time) : ymdUTC(c.time);
+    if (curDay === null || dayKeyNow !== curDay) { curDay = dayKeyNow; dayPnl = 0; dayTrades = 0; }
 
     // ----- time-based exits -----
     if (open && open._maxBarsInTrade > 0) {
@@ -340,8 +342,9 @@ export function backtest({
       if (hit) {
         const exitKind = hit === 'TP' ? 'limit' : 'stop';
         const { price: filled, fee: feeUnit } = applyFill(px, exitSide, { slippageBps, feeBps, kind: exitKind });
+        const localCooldown = open?._cooldownBars || 0;
         closeLeg({ openPos: open, qty: open.size, exitPx: filled, exitFeePerUnit: feeUnit, time: c.time, reason: hit });
-        cooldown = (hit === 'SL' ? Math.max(cooldown, postLossCooldownBars) : cooldown) || (open?._cooldownBars || 0);
+        cooldown = (hit === 'SL' ? Math.max(cooldown, postLossCooldownBars) : cooldown) || localCooldown;
         open = null;
       }
     }
@@ -398,6 +401,23 @@ export function backtest({
         stopPx = dir === 1 ? (entryPx - plannedRisk) : (entryPx + plannedRisk);
       }
 
+      // If original TP looked RR-based, preserve the same RR after re-anchor.
+      // Heuristic: compare pending.tp with RR target from *planned* entry/stop.
+      let tpPx = pending.tp;
+      const initRiskNowPre = Math.abs(entryPx - stopPx) || 1e-8;
+      const rrGuess = pending.meta?._rr;
+      if (reanchorStopOnFill && Number.isFinite(rrGuess)) {
+        const rrPlannedTP = pending.side === 'long'
+          ? pending.entry + rrGuess * plannedRisk
+          : pending.entry - rrGuess * plannedRisk;
+        const closeEnough = Math.abs((pending.tp ?? rrPlannedTP) - rrPlannedTP) <= Math.max(1e-8, plannedRisk * 1e-6);
+        if (closeEnough) {
+          tpPx = pending.side === 'long'
+            ? entryPx + rrGuess * initRiskNowPre
+            : entryPx - rrGuess * initRiskNowPre;
+        }
+      }
+
       const sizeRaw = positionSize({
         equity: eq,
         entry: entryPx,
@@ -419,7 +439,7 @@ export function backtest({
         side: pending.side,
         entry: entryPx,
         stop: stopPx,
-        takeProfit: pending.tp,
+        takeProfit: tpPx,
         size,
         openTime: c.time,
         entryFill,

@@ -1,4 +1,8 @@
+// src/backtest/core/helpers.js
+
 // Core helper utilities for backtest engine
+
+import { minutesET } from '../../utils/time.js';
 
 /**
  * Apply a trade fill with configurable slippage "kind":
@@ -32,6 +36,11 @@ export function touchedLimit(side, limitPx, bar, mode = 'intrabar') {
   return side === 'long' ? (bar.low <= limitPx) : (bar.high >= limitPx);
 }
 
+/**
+ * One-Cancels-the-Other exit check.
+ * - In 'intrabar' mode, tieBreak applies if both SL & TP were touched.
+ * - In 'close' mode, tieBreak is not used (decisions are based on close only).
+ */
 export function ocoExitCheck({ side, stop, tp, bar, mode = 'intrabar', tieBreak = 'pessimistic' }) {
   if (mode === 'close') {
     const px = bar.close;
@@ -83,4 +92,27 @@ export const ymdUTC = (ms) => {
   const mm = d.getUTCMonth() + 1;
   const dd = d.getUTCDate();
   return `${d.getUTCFullYear()}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+};
+
+/**
+ * ET-trading-day date key (YYYY-MM-DD), using minutesET() to map UTC to ET day.
+ * Useful for daily risk buckets on US sessions (aligns with cash session).
+ */
+export const ymdET = (ms) => {
+  const d = new Date(ms);
+  const mET = minutesET(ms);
+  const hET = Math.floor(mET / 60);
+  const minET = mET % 60;
+
+  // Build a pseudo-ET-local timestamp: take the UTC date, then place ET hours/min
+  const y = d.getUTCFullYear();
+  const mon = d.getUTCMonth();
+  const utcDay = d.getUTCDate();
+  const anchor = new Date(Date.UTC(y, mon, utcDay, 0, 0, 0));
+  const etMs = anchor.getTime() + hET * 60 * 1000 + minET * 60 * 1000;
+
+  const x = new Date(etMs);
+  const mm = String(x.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(x.getUTCDate()).padStart(2, '0');
+  return `${x.getUTCFullYear()}-${mm}-${dd}`;
 };
